@@ -1,0 +1,9 @@
+{
+  "name": "opencode-plugin-token-usage",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@opencode-ai/plugin": "1.2.15"
+  }
+}
