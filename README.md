@@ -32,6 +32,7 @@ Once installed, the plugin automatically displays a compact toast showing usage 
   5h   🟩🟩🟩🟩🟩    5%  ↻ 3h 15m
   7d   🟩🟩🟩🟩⬛   18%  ↻ 5d 8h 0m
 ```
+<img width="1750" height="1269" alt="image" src="https://github.com/user-attachments/assets/5c5b1f72-1c07-4a9c-9ad6-027b203aecc7" />
 
 ### Tool (On-Demand)
 
