@@ -12,10 +12,28 @@ An [OpenCode](https://github.com/opencode-ai/opencode) plugin that monitors your
 ## Installation
 
 ```bash
-npm install opencode-plugin-token-usage
+cd ~/.config/opencode/
+mkdir plugins
+cd plugins
+git clone https://github.com/DongHyunnn/opencode-plugin-token-usage.git
 ```
 
-Or add it directly in your OpenCode plugin configuration.
+and add the plugin directory to opencode.json.
+
+```bash
+vi ~/.config/opencode/opencode.json
+```
+
+add relative file path of the plugin in plugin section like this 
+
+```json
+...
+  "plugin": [
+    "oh-my-opencode@latest",
+    "./plugins/opencode-plugin-token-usage"
+  ],
+...
+```
 
 ## Usage
 
