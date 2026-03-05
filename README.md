@@ -8,6 +8,7 @@ An [OpenCode](https://github.com/opencode-ai/opencode) plugin that monitors your
 - **`check_token_usage` tool** — On-demand usage report with detailed breakdowns
 - **Multi-provider** — Supports both Anthropic (Claude) and OpenAI (Codex) simultaneously
 - **Rate limit aware** — Automatic backoff on 429s, cached responses to avoid unnecessary API calls
+- **Auto OAuth refresh** — Automatically refreshes expired Anthropic/OpenAI access tokens and retries usage requests
 
 ## Installation
 
@@ -77,6 +78,14 @@ The plugin reads OAuth tokens from:
 | OpenAI    | `~/.codex/auth.json` or OpenCode auth store  |
 
 No additional configuration needed — just sign in through OpenCode or the respective CLI.
+
+### Automatic token refresh behavior
+
+- Anthropic: refreshes on expired access token or `401` from usage API
+- OpenAI/Codex: refreshes on missing/invalid access token or `401`/`403` from usage API
+- Updated access and refresh tokens are persisted back to local auth files
+
+If refresh fails (for example, revoked refresh token), re-authenticate with `opencode auth login`.
 
 ## License
 

@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin/tool";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -10,12 +10,19 @@ const CODEX_AUTH = join(homedir(), ".codex", "auth.json");
 // ── Endpoints ────────────────────────────────────────────────────────
 const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const ANTHROPIC_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
+const ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OPENAI_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const TOAST_THROTTLE_MS = 5_000;
 const TOAST_DURATION_MS = 30_000;
 const STATUS_REFRESH_MS = 20_000;
 const ANTHROPIC_REFRESH_MS = 60_000;
 const ANTHROPIC_RATE_LIMIT_BACKOFF_MS = 300_000;
+
+let anthropicRefreshInFlight = null;
+let openaiRefreshInFlight = null;
 
 /** Horizontal line between agent blocks in toast (visual separation) */
 const AGENT_SEPARATOR = "────────────────────────────────";
@@ -32,6 +39,10 @@ async function readJson(path) {
   } catch {
     return null;
   }
+}
+
+async function writeJson(path, value) {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
 }
 
 /** Safely parse a utilization value (0-1 ratio or raw percent) into 0-100 integer */
@@ -121,6 +132,240 @@ function isTokenExpired(expiresMs) {
 function getErrorMessage(error) {
   if (error instanceof Error) return error.message;
   return String(error ?? "Unknown error");
+}
+
+async function refreshAnthropicAuth(opencodeAuth) {
+  const refreshToken = opencodeAuth?.anthropic?.refresh;
+  if (!refreshToken) {
+    throw new Error("Anthropic refresh token missing");
+  }
+
+  const response = await fetch(ANTHROPIC_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: ANTHROPIC_OAUTH_CLIENT_ID,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Anthropic refresh ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  if (!json?.access_token) {
+    throw new Error("Anthropic refresh failed: missing access token");
+  }
+
+  const expiresIn = Number(json.expires_in);
+  const anthropic = {
+    ...(opencodeAuth?.anthropic ?? {}),
+    type: "oauth",
+    refresh: json.refresh_token ?? refreshToken,
+    access: json.access_token,
+  };
+
+  if (Number.isFinite(expiresIn) && expiresIn > 0) {
+    anthropic.expires = Date.now() + expiresIn * 1000;
+  } else {
+    delete anthropic.expires;
+  }
+
+  const updatedAuth = {
+    ...(opencodeAuth ?? {}),
+    anthropic,
+  };
+
+  await writeJson(OPENCODE_AUTH, updatedAuth);
+  return updatedAuth;
+}
+
+async function ensureAnthropicAuth({ forceRefresh = false } = {}) {
+  const auth = (await readJson(OPENCODE_AUTH)) ?? {};
+  const anthropic = auth?.anthropic;
+
+  if (
+    !forceRefresh &&
+    anthropic?.access &&
+    !isTokenExpired(anthropic?.expires)
+  ) {
+    return {
+      auth,
+      refreshed: false,
+    };
+  }
+
+  if (!anthropic?.refresh) {
+    return {
+      auth,
+      refreshed: false,
+    };
+  }
+
+  if (!anthropicRefreshInFlight) {
+    anthropicRefreshInFlight = refreshAnthropicAuth(auth).finally(() => {
+      anthropicRefreshInFlight = null;
+    });
+  }
+
+  const refreshedAuth = await anthropicRefreshInFlight;
+  return {
+    auth: refreshedAuth,
+    refreshed: true,
+  };
+}
+
+function isCodexAuthError(message) {
+  return message.includes("Codex 401") || message.includes("Codex 403");
+}
+
+async function refreshOpenAIAuthWithToken({ refreshToken, opencodeAuth, codexAuth }) {
+  const response = await fetch(OPENAI_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: OPENAI_OAUTH_CLIENT_ID,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`OpenAI refresh ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  if (!json?.access_token) {
+    throw new Error("OpenAI refresh failed: missing access token");
+  }
+
+  const rotatedRefreshToken = json.refresh_token ?? refreshToken;
+  const expiresInSeconds = Number(json.expires_in);
+  const expirySeconds =
+    Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+      ? expiresInSeconds
+      : 3600;
+
+  let updatedOpencodeAuth = opencodeAuth;
+  const hasOpenCodeOAuth = Boolean(
+    opencodeAuth?.openai?.refresh || opencodeAuth?.openai?.access,
+  );
+  if (hasOpenCodeOAuth) {
+    updatedOpencodeAuth = {
+      ...(opencodeAuth ?? {}),
+      openai: {
+        ...(opencodeAuth?.openai ?? {}),
+        type: "oauth",
+        refresh: rotatedRefreshToken,
+        access: json.access_token,
+        expires: Date.now() + expirySeconds * 1000,
+      },
+    };
+    await writeJson(OPENCODE_AUTH, updatedOpencodeAuth);
+  }
+
+  let updatedCodexAuth = codexAuth;
+  const hasCodexOAuth = Boolean(
+    codexAuth?.tokens?.refresh_token || codexAuth?.tokens?.access_token,
+  );
+  if (hasCodexOAuth) {
+    updatedCodexAuth = {
+      ...(codexAuth ?? {}),
+      tokens: {
+        ...(codexAuth?.tokens ?? {}),
+        access_token: json.access_token,
+        refresh_token: rotatedRefreshToken,
+        ...(json.id_token ? { id_token: json.id_token } : {}),
+      },
+      last_refresh: Date.now(),
+    };
+    await writeJson(CODEX_AUTH, updatedCodexAuth);
+  }
+
+  return {
+    token: json.access_token,
+    opencodeAuth: updatedOpencodeAuth,
+    codexAuth: updatedCodexAuth,
+    refreshed: true,
+  };
+}
+
+async function ensureOpenAIAuth({ forceRefresh = false } = {}) {
+  const opencodeAuth = (await readJson(OPENCODE_AUTH)) ?? {};
+  const codexAuth = (await readJson(CODEX_AUTH)) ?? {};
+
+  const codexAccess = codexAuth?.tokens?.access_token;
+  const openaiAccess = opencodeAuth?.openai?.access;
+  const openaiAccessValid = Boolean(openaiAccess) && !isTokenExpired(opencodeAuth?.openai?.expires);
+
+  if (!forceRefresh) {
+    if (codexAccess) {
+      return {
+        token: codexAccess,
+        opencodeAuth,
+        codexAuth,
+        refreshed: false,
+      };
+    }
+    if (openaiAccessValid) {
+      return {
+        token: openaiAccess,
+        opencodeAuth,
+        codexAuth,
+        refreshed: false,
+      };
+    }
+  }
+
+  const refreshTokens = [];
+  if (opencodeAuth?.openai?.refresh) {
+    refreshTokens.push(opencodeAuth.openai.refresh);
+  }
+  if (
+    codexAuth?.tokens?.refresh_token &&
+    codexAuth.tokens.refresh_token !== opencodeAuth?.openai?.refresh
+  ) {
+    refreshTokens.push(codexAuth.tokens.refresh_token);
+  }
+
+  if (!refreshTokens.length) {
+    return {
+      token: codexAccess ?? openaiAccess ?? null,
+      opencodeAuth,
+      codexAuth,
+      refreshed: false,
+    };
+  }
+
+  if (!openaiRefreshInFlight) {
+    openaiRefreshInFlight = (async () => {
+      let lastError = null;
+      for (const refreshToken of refreshTokens) {
+        try {
+          return await refreshOpenAIAuthWithToken({
+            refreshToken,
+            opencodeAuth,
+            codexAuth,
+          });
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError ?? new Error("OpenAI refresh failed");
+    })().finally(() => {
+      openaiRefreshInFlight = null;
+    });
+  }
+
+  return openaiRefreshInFlight;
 }
 
 // ── Anthropic (Claude) ───────────────────────────────────────────────
@@ -335,65 +580,115 @@ function createStatusBar(client) {
     lastUpdateAt = now;
 
     try {
-      const opencodeAuth = await readJson(OPENCODE_AUTH);
-      const codexAuth = await readJson(CODEX_AUTH);
+      let opencodeAuth = await readJson(OPENCODE_AUTH);
+      let codexAuth = await readJson(CODEX_AUTH);
       const parts = [];
       const warnings = [];
 
       // ── Anthropic ──
-      const anthropicToken = opencodeAuth?.anthropic?.access;
-      if (anthropicToken) {
-        if (isTokenExpired(opencodeAuth?.anthropic?.expires)) {
-          warnings.push("Claude: token expired");
-        } else {
-          const canUseCache =
-            lastAnthropicData &&
-            now - lastAnthropicFetchAt < ANTHROPIC_REFRESH_MS;
+      let anthropicToken = opencodeAuth?.anthropic?.access;
+      if (opencodeAuth?.anthropic?.refresh && (!anthropicToken || isTokenExpired(opencodeAuth?.anthropic?.expires))) {
+        try {
+          const ensured = await ensureAnthropicAuth();
+          opencodeAuth = ensured.auth;
+          anthropicToken = opencodeAuth?.anthropic?.access;
+        } catch {
+          warnings.push("Claude: auth expired");
+        }
+      }
 
-          if (canUseCache) {
-            const s = compactAnthropicStatus(lastAnthropicData);
+      if (anthropicToken) {
+        const canUseCache =
+          lastAnthropicData &&
+          now - lastAnthropicFetchAt < ANTHROPIC_REFRESH_MS;
+
+        if (canUseCache) {
+          const s = compactAnthropicStatus(lastAnthropicData);
+          if (s) parts.push(s);
+        } else if (now < anthropicBackoffUntil && lastAnthropicData) {
+          const s = compactAnthropicStatus(lastAnthropicData);
+          if (s) parts.push(s);
+        } else {
+          try {
+            const data = await fetchAnthropicUsage(anthropicToken);
+            lastAnthropicData = data;
+            lastAnthropicFetchAt = now;
+            const s = compactAnthropicStatus(data);
             if (s) parts.push(s);
-          } else if (now < anthropicBackoffUntil && lastAnthropicData) {
-            const s = compactAnthropicStatus(lastAnthropicData);
-            if (s) parts.push(s);
-          } else {
-            try {
-              const data = await fetchAnthropicUsage(anthropicToken);
-              lastAnthropicData = data;
-              lastAnthropicFetchAt = now;
-              const s = compactAnthropicStatus(data);
-              if (s) parts.push(s);
-            } catch (error) {
-              lastAnthropicFetchAt = now;
-              const message = getErrorMessage(error);
-              if (message.includes("Anthropic 429")) {
-                anthropicBackoffUntil = now + ANTHROPIC_RATE_LIMIT_BACKOFF_MS;
-                if (lastAnthropicData) {
-                  const s = compactAnthropicStatus(lastAnthropicData);
-                  if (s) parts.push(s);
-                } else {
-                  warnings.push("Claude: rate limited, retrying soon");
-                }
-              } else if (message.includes("Anthropic 401")) {
-                warnings.push("Claude: auth expired");
+          } catch (error) {
+            lastAnthropicFetchAt = now;
+            const message = getErrorMessage(error);
+            if (message.includes("Anthropic 429")) {
+              anthropicBackoffUntil = now + ANTHROPIC_RATE_LIMIT_BACKOFF_MS;
+              if (lastAnthropicData) {
+                const s = compactAnthropicStatus(lastAnthropicData);
+                if (s) parts.push(s);
               } else {
-                warnings.push("Claude: fetch failed");
+                warnings.push("Claude: rate limited, retrying soon");
               }
+            } else if (message.includes("Anthropic 401")) {
+              try {
+                const ensured = await ensureAnthropicAuth({ forceRefresh: true });
+                const refreshedToken = ensured.auth?.anthropic?.access;
+                if (!refreshedToken) {
+                  throw new Error("missing refreshed token");
+                }
+                const retryData = await fetchAnthropicUsage(refreshedToken);
+                lastAnthropicData = retryData;
+                const s = compactAnthropicStatus(retryData);
+                if (s) parts.push(s);
+              } catch {
+                warnings.push("Claude: auth expired");
+              }
+            } else {
+              warnings.push("Claude: fetch failed");
             }
           }
         }
       }
 
       // ── OpenAI ──
-      const codexToken =
+      let codexToken =
         codexAuth?.tokens?.access_token ?? opencodeAuth?.openai?.access;
+      if (
+        (opencodeAuth?.openai?.refresh || codexAuth?.tokens?.refresh_token) &&
+        !codexToken
+      ) {
+        try {
+          const ensured = await ensureOpenAIAuth();
+          opencodeAuth = ensured.opencodeAuth;
+          codexAuth = ensured.codexAuth;
+          codexToken = ensured.token;
+        } catch {
+          warnings.push("Codex: auth expired");
+        }
+      }
+
       if (codexToken) {
         try {
           const data = await fetchCodexUsage(codexToken);
           const s = compactCodexStatus(data);
           if (s) parts.push(s);
-        } catch {
-          warnings.push("Codex: fetch failed");
+        } catch (error) {
+          const message = getErrorMessage(error);
+          if (isCodexAuthError(message)) {
+            try {
+              const ensured = await ensureOpenAIAuth({ forceRefresh: true });
+              opencodeAuth = ensured.opencodeAuth;
+              codexAuth = ensured.codexAuth;
+              const refreshedToken = ensured.token;
+              if (!refreshedToken) {
+                throw new Error("missing refreshed token");
+              }
+              const retryData = await fetchCodexUsage(refreshedToken);
+              const s = compactCodexStatus(retryData);
+              if (s) parts.push(s);
+            } catch {
+              warnings.push("Codex: auth expired");
+            }
+          } else {
+            warnings.push("Codex: fetch failed");
+          }
         }
       }
 
@@ -476,39 +771,93 @@ export const TokenUsagePlugin = async (ctx) => {
 
           // ── Anthropic ──
           if (provider === "all" || provider === "anthropic") {
-            const token = opencodeAuth?.anthropic?.access;
-            if (!token) {
+            const hasAuth =
+              opencodeAuth?.anthropic?.access || opencodeAuth?.anthropic?.refresh;
+            if (!hasAuth) {
               errors.push(
                 "Anthropic: No OAuth token found. Sign in via OpenCode (provider auth) first.",
               );
-            } else if (isTokenExpired(opencodeAuth?.anthropic?.expires)) {
-              errors.push(
-                "Anthropic: Access token expired. Re-authenticate in OpenCode settings.",
-              );
             } else {
               try {
-                const data = await fetchAnthropicUsage(token);
-                sections.push(formatAnthropicUsage(data));
+                const ensured = await ensureAnthropicAuth();
+                const token = ensured.auth?.anthropic?.access;
+                if (!token) {
+                  errors.push(
+                    "Anthropic: Could not get a valid access token. Re-authenticate in OpenCode settings.",
+                  );
+                } else {
+                  try {
+                    const data = await fetchAnthropicUsage(token);
+                    sections.push(formatAnthropicUsage(data));
+                  } catch (e) {
+                    const message = getErrorMessage(e);
+                    if (message.includes("Anthropic 401")) {
+                      const refreshed = await ensureAnthropicAuth({
+                        forceRefresh: true,
+                      });
+                      const refreshedToken = refreshed.auth?.anthropic?.access;
+                      if (!refreshedToken) {
+                        throw new Error(
+                          "Access token missing after refresh. Re-authenticate in OpenCode settings.",
+                        );
+                      }
+                      const retryData = await fetchAnthropicUsage(refreshedToken);
+                      sections.push(formatAnthropicUsage(retryData));
+                    } else {
+                      throw e;
+                    }
+                  }
+                }
               } catch (e) {
-                errors.push(`Anthropic: ${e.message}`);
+                errors.push(`Anthropic: ${getErrorMessage(e)}`);
               }
             }
           }
 
           // ── OpenAI / Codex ──
           if (provider === "all" || provider === "openai") {
-            const token =
-              codexAuth?.tokens?.access_token ?? opencodeAuth?.openai?.access;
-            if (!token) {
+            const hasAuth =
+              codexAuth?.tokens?.access_token ||
+              codexAuth?.tokens?.refresh_token ||
+              opencodeAuth?.openai?.access ||
+              opencodeAuth?.openai?.refresh;
+            if (!hasAuth) {
               errors.push(
                 "OpenAI: No access token found. Sign in via Codex CLI or OpenCode first.",
               );
             } else {
               try {
-                const data = await fetchCodexUsage(token);
-                sections.push(formatCodexUsage(data));
+                const ensured = await ensureOpenAIAuth();
+                const token = ensured.token;
+                if (!token) {
+                  errors.push(
+                    "OpenAI: Could not get a valid access token. Re-authenticate in OpenCode settings.",
+                  );
+                } else {
+                  try {
+                    const data = await fetchCodexUsage(token);
+                    sections.push(formatCodexUsage(data));
+                  } catch (e) {
+                    const message = getErrorMessage(e);
+                    if (isCodexAuthError(message)) {
+                      const refreshed = await ensureOpenAIAuth({
+                        forceRefresh: true,
+                      });
+                      const refreshedToken = refreshed.token;
+                      if (!refreshedToken) {
+                        throw new Error(
+                          "Access token missing after refresh. Re-authenticate in OpenCode settings.",
+                        );
+                      }
+                      const retryData = await fetchCodexUsage(refreshedToken);
+                      sections.push(formatCodexUsage(retryData));
+                    } else {
+                      throw e;
+                    }
+                  }
+                }
               } catch (e) {
-                errors.push(`OpenAI: ${e.message}`);
+                errors.push(`OpenAI: ${getErrorMessage(e)}`);
               }
             }
           }
