@@ -1,9 +1,128 @@
 {
-  "name": "opencode-plugin-token-usage",
-  "version": "1.0.0",
-  "type": "module",
-  "main": "index.js",
-  "dependencies": {
-    "@opencode-ai/plugin": "1.2.15"
+  "name": "opencode-token-usage-extension",
+  "displayName": "OpenCode Token Usage",
+  "description": "VS Code/Cursor extension that shows OpenCode token history plus live provider rate limits and billing.",
+  "version": "2.0.0",
+  "publisher": "donghyunnn",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./src/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:opencodeTokenUsage.dashboard",
+    "onCommand:opencodeTokenUsage.refresh",
+    "onCommand:opencodeTokenUsage.selectWindow",
+    "onCommand:opencodeTokenUsage.openDashboard"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencodeTokenUsage.openDashboard",
+        "title": "OpenCode Token Usage: Open Dashboard"
+      },
+      {
+        "command": "opencodeTokenUsage.refresh",
+        "title": "OpenCode Token Usage: Refresh"
+      },
+      {
+        "command": "opencodeTokenUsage.selectWindow",
+        "title": "OpenCode Token Usage: Select History Window"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "opencodeTokenUsage",
+          "title": "OpenCode Usage",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencodeTokenUsage": [
+        {
+          "id": "opencodeTokenUsage.dashboard",
+          "name": "Dashboard"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "opencodeTokenUsage.refresh",
+          "when": "view == opencodeTokenUsage.dashboard",
+          "group": "navigation"
+        },
+        {
+          "command": "opencodeTokenUsage.selectWindow",
+          "when": "view == opencodeTokenUsage.dashboard",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OpenCode Token Usage",
+      "properties": {
+        "opencodeTokenUsage.databasePath": {
+          "type": "string",
+          "default": "~/.local/share/opencode/opencode.db",
+          "scope": "machine",
+          "description": "Path to the local OpenCode SQLite database."
+        },
+        "opencodeTokenUsage.openCodeAuthPath": {
+          "type": "string",
+          "default": "~/.local/share/opencode/auth.json",
+          "scope": "machine",
+          "description": "Path to the local OpenCode auth file used for Anthropic/OpenAI OAuth refresh."
+        },
+        "opencodeTokenUsage.codexAuthPath": {
+          "type": "string",
+          "default": "~/.codex/auth.json",
+          "scope": "machine",
+          "description": "Path to the local Codex auth file."
+        },
+        "opencodeTokenUsage.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Fallback polling interval for refreshing history and live provider data."
+        },
+        "opencodeTokenUsage.historyWindow": {
+          "type": "string",
+          "default": "24h",
+          "enum": [
+            "1h",
+            "7h",
+            "24h",
+            "7d"
+          ],
+          "description": "Default OpenCode history window shown in the status bar and dashboard."
+        },
+        "opencodeTokenUsage.showEstimated7h": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show an estimated 7h usage section derived from OpenCode local history."
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Reads local OpenCode history and auth files from machine-scoped settings."
+    }
+  },
+  "scripts": {
+    "dev": "node ./scripts/dev.js",
+    "test": "node --test"
   }
 }

@@ -1,96 +1,84 @@
-# opencode-plugin-token-usage
+# OpenCode Token Usage
 
-An [OpenCode](https://github.com/opencode-ai/opencode) plugin that monitors your Anthropic Claude and OpenAI Codex token usage in real time.
+A VS Code/Cursor extension that combines two sources of truth:
 
-## Features
+- local OpenCode message history from `~/.local/share/opencode/opencode.db`
+- live provider windows from Anthropic and Codex/OpenAI usage APIs
 
-- **Live status bar** — Auto-refreshing toast notifications showing usage across providers
-- **`check_token_usage` tool** — On-demand usage report with detailed breakdowns
-- **Multi-provider** — Supports both Anthropic (Claude) and OpenAI (Codex) simultaneously
-- **Rate limit aware** — Automatic backoff on 429s, cached responses to avoid unnecessary API calls
-- **Auto OAuth refresh** — Automatically refreshes expired Anthropic/OpenAI access tokens and retries usage requests
+## What it shows
 
-## Installation
+- a status bar headline with provider summaries (live percent or fallback billing)
+- a native dashboard tree view with:
+  - `Live Rate Limits`
+  - `Live Billing`
+  - `Local History`
+  - optional `Estimated 7h`
+  - `Diagnostics`
+- user-selectable local history windows: `1h`, `7h`, `24h`, `7d`
+
+## How it works
+
+- OpenCode history is read from the local SQLite `message` table, which already stores provider, model, token, cost, and timestamp metadata.
+- Anthropic and Codex live windows still come from provider APIs so their rate-limit windows stay authoritative.
+- The optional `7h` section is derived from local history and is intentionally labeled as an estimate.
+- The history reader currently shells out to the local `sqlite3` binary, so the host machine needs `sqlite3` available on `PATH`.
+
+## Settings
+
+- `opencodeTokenUsage.databasePath`
+- `opencodeTokenUsage.openCodeAuthPath`
+- `opencodeTokenUsage.codexAuthPath`
+- `opencodeTokenUsage.refreshIntervalSeconds`
+- `opencodeTokenUsage.historyWindow`
+- `opencodeTokenUsage.showEstimated7h`
+
+These paths are machine-scoped because they point to local editor/runtime state.
+
+## How auth is checked
+
+- **Claude (Anthropic)**: Uses `openCodeAuthPath` to read `~/.local/share/opencode/auth.json`, reuses a valid `anthropic` access token until expiry, then refreshes with the stored refresh token.
+- **Codex/OpenAI**: Reads both `openCodeAuthPath` and `codexAuthPath`; uses valid OpenCode access first; otherwise tries refresh tokens from either path; otherwise falls back to raw Codex access token only when no refresh path exists.
+- **Gemini**: Reuses the existing `google.key` entry from `openCodeAuthPath` and is estimate-only (no live quota endpoint).
+- **Status bar fallback chain**: `live percent` → `vendor billing` → `estimated local 5h charge`.
+- **Gemini quota visibility**: Official quota and spend remain visible in [AI Studio](https://aistudio.google.com) because the Gemini Developer API does not expose a lightweight authoritative remaining-quota endpoint.
+- **Diagnostics**: Auth failures are categorized as `not configured`, `expired`, `refresh failed`, or `fetch failed` to help troubleshooting.
+
+## Development
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DongHyunnn/opencode-plugin-token-usage/main/install.sh | bash
+npm install
+npm run dev
+npm test
 ```
 
-The script clones the plugin and automatically adds it to your `~/.config/opencode/opencode.json`. Safe to re-run — won't duplicate entries.
+Open the folder in VS Code or Cursor and run the extension host from the editor.
 
-Then restart OpenCode to activate.
+## Local testing
 
-<details>
-<summary>Manual installation</summary>
+- Cursor: open this folder and run the `Run OpenCode Token Usage Extension` launch configuration.
+- VS Code: same flow; the repo now includes `.vscode/launch.json`.
+- One-command launcher:
 
 ```bash
-cd ~/.config/opencode/plugins
-git clone https://github.com/DongHyunnn/opencode-plugin-token-usage.git
+npm run dev
 ```
 
-Add to `~/.config/opencode/opencode.json`:
+- Dry-run command resolution:
 
-```json
-{
-  "plugin": [
-    "oh-my-opencode@latest",
-    "./plugins/opencode-plugin-token-usage"
-  ]
-}
-```
-</details>
-
-## Usage
-
-### Status Bar (Automatic)
-
-Once installed, the plugin automatically displays a compact toast showing usage for all configured providers. It refreshes every 20 seconds and looks like:
-
-```
-▸ Claude
-  5h   🟩🟩🟩🟩⬛   20%  ↻ 2h 30m
-  7d   🟩🟩🟩⬛⬛   40%  ↻ 4d 12h 0m
-────────────────────────────────
-▸ Codex
-  5h   🟩🟩🟩🟩🟩    5%  ↻ 3h 15m
-  7d   🟩🟩🟩🟩⬛   18%  ↻ 5d 8h 0m
-```
-<img width="1750" height="1269" alt="image" src="https://github.com/user-attachments/assets/5c5b1f72-1c07-4a9c-9ad6-027b203aecc7" />
-
-### Tool (On-Demand)
-
-Invoke `check_token_usage` to get a detailed markdown report:
-
-```
-check_token_usage(provider: "all" | "anthropic" | "openai")
+```bash
+npm run dev -- --dry-run
 ```
 
-The report includes:
+- CLI alternative:
 
-- Progress bars with percentage used/remaining
-- Time until each window resets
-- Extra usage (pay-as-you-go) details for Anthropic
-- Rate limit status for Codex
+```bash
+cursor --extensionDevelopmentPath="$(pwd)"
+```
 
-## Authentication
+or
 
-The plugin reads OAuth tokens from:
+```bash
+code --extensionDevelopmentPath="$(pwd)"
+```
 
-| Provider  | Token Location                               |
-|-----------|----------------------------------------------|
-| Anthropic | `~/.local/share/opencode/auth.json`          |
-| OpenAI    | `~/.codex/auth.json` or OpenCode auth store  |
-
-No additional configuration needed — just sign in through OpenCode or the respective CLI.
-
-### Automatic token refresh behavior
-
-- Anthropic: refreshes on expired access token or `401` from usage API
-- OpenAI/Codex: refreshes on missing/invalid access token or `401`/`403` from usage API
-- Updated access and refresh tokens are persisted back to local auth files
-
-If refresh fails (for example, revoked refresh token), re-authenticate with `opencode auth login`.
-
-## License
-
-MIT
+In the Extension Development Host, open the `OpenCode Usage` panel, then run `OpenCode Token Usage: Refresh` from the command palette if needed.
