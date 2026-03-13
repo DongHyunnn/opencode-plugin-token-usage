@@ -35,3 +35,27 @@ test("summarizeHistoryRows aggregates provider totals", () => {
   assert.equal(summary.providers[0].provider, "openai");
   assert.equal(summary.providers[1].provider, "anthropic");
 });
+
+test("summarizeHistoryRows supports rolling 30d monthly summaries", () => {
+  const summary = summarizeHistoryRows(
+    [
+      {
+        provider: "google",
+        messageCount: "10",
+        totalTokens: "6000",
+        inputTokens: "2500",
+        outputTokens: "3000",
+        reasoningTokens: "500",
+        totalCost: "12.75",
+        lastAt: "1700000000200",
+      },
+    ],
+    "30d",
+    1700000000300,
+  );
+
+  assert.equal(summary.window.key, "30d");
+  assert.equal(summary.totalTokens, 6000);
+  assert.equal(summary.totalCost, 12.75);
+  assert.equal(summary.providers[0].provider, "google");
+});

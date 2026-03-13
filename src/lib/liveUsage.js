@@ -8,6 +8,7 @@ const {
   ANTHROPIC_RATE_LIMIT_BACKOFF_MS,
 } = require("../constants");
 const { readJson, writeJson } = require("./json");
+const { getProviderPolicy } = require("./providerPolicies");
 const { safePct, safeRawPct, formatReset } = require("./time");
 
 let anthropicRefreshInFlight = null;
@@ -146,8 +147,8 @@ function normalizeAnthropicUsage(data) {
   let billing = null;
   const extra = data?.extra_usage;
   if (extra?.is_enabled) {
-    const used = Number(extra.used_credits) || 0;
-    const limit = Number(extra.monthly_limit) || 0;
+    const used = normalizeAnthropicCredits(extra.used_credits);
+    const limit = normalizeAnthropicCredits(extra.monthly_limit);
     billing = {
       label: "Extra usage",
       amountUsed: used,
@@ -164,6 +165,11 @@ function normalizeAnthropicUsage(data) {
     billing,
     limitReached: false,
   };
+}
+
+function normalizeAnthropicCredits(value) {
+  const amount = Number(value) || 0;
+  return amount / 100;
 }
 
 function formatWindowLabel(seconds) {
@@ -390,12 +396,17 @@ async function loadLiveUsage(paths, previousState = {}) {
   const providers = [];
   const diagnostics = [];
   const now = Date.now();
+  const anthropicPolicy = getProviderPolicy("anthropic");
   const nextState = {
     anthropicBackoffUntil: previousState.anthropicBackoffUntil ?? 0,
+    anthropicProvider: previousState.anthropicProvider ?? null,
   };
 
   if (now < nextState.anthropicBackoffUntil) {
     diagnostics.push("Claude rate limited; using backoff window");
+    if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
+      providers.push(nextState.anthropicProvider);
+    }
   } else {
     try {
       const anthropicAuth = await ensureAnthropicAuth(paths.openCodeAuthPath);
@@ -403,7 +414,9 @@ async function loadLiveUsage(paths, previousState = {}) {
       if (anthropicToken) {
         try {
           const data = await fetchAnthropicUsage(anthropicToken);
-          providers.push(normalizeAnthropicUsage(data));
+          const provider = normalizeAnthropicUsage(data);
+          providers.push(provider);
+          nextState.anthropicProvider = provider;
         } catch (error) {
           const message = getErrorMessage(error);
           if (message.includes("Anthropic 401")) {
@@ -412,7 +425,9 @@ async function loadLiveUsage(paths, previousState = {}) {
               const retryToken = refreshed?.refreshed ? refreshed?.auth?.anthropic?.access : null;
               if (retryToken && retryToken !== anthropicToken) {
                 const retryData = await fetchAnthropicUsage(retryToken);
-                providers.push(normalizeAnthropicUsage(retryData));
+                const provider = normalizeAnthropicUsage(retryData);
+                providers.push(provider);
+                nextState.anthropicProvider = provider;
               } else {
                 diagnostics.push(getAnthropicAuthDiagnostic(refreshed?.status) ?? "Claude auth expired");
               }
@@ -422,6 +437,9 @@ async function loadLiveUsage(paths, previousState = {}) {
           } else if (message.includes("Anthropic 429")) {
             nextState.anthropicBackoffUntil = now + ANTHROPIC_RATE_LIMIT_BACKOFF_MS;
             diagnostics.push(`Claude rate limited; backing off for ${Math.round(ANTHROPIC_RATE_LIMIT_BACKOFF_MS / 60000)}m`);
+            if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
+              providers.push(nextState.anthropicProvider);
+            }
           } else {
             diagnostics.push(`Claude fetch failed: ${message}`);
           }

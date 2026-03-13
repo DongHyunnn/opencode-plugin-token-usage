@@ -43,12 +43,12 @@ test("renders exact compact grammar for three-provider snapshot", () => {
         providers: [
           {
             provider: "anthropic",
-            windows: [{ percentUsed: 5 }],
+            windows: [{ id: "anthropic-5h", label: "5h", percentUsed: 5, resetText: "3h 1m" }],
             limitReached: false,
           },
           {
             provider: "openai",
-            windows: [{ percentUsed: 4 }],
+            windows: [{ id: "openai-primary", label: "5h", percentUsed: 4, resetText: "2h 12m" }],
             limitReached: false,
           },
           {
@@ -127,12 +127,12 @@ test("includes tooltip lines with source labels", () => {
         providers: [
           {
             provider: "anthropic",
-            windows: [{ percentUsed: 5 }],
+            windows: [{ id: "anthropic-5h", label: "5h", percentUsed: 5, resetText: "3h 1m" }],
             limitReached: false,
           },
           {
             provider: "openai",
-            windows: [{ percentUsed: 4 }],
+            windows: [{ id: "openai-primary", label: "5h", percentUsed: 4, resetText: "2h 12m" }],
             limitReached: false,
           },
           {
@@ -141,6 +141,9 @@ test("includes tooltip lines with source labels", () => {
         ],
       },
       rollingFiveHourHistory: {
+        providers: [],
+      },
+      monthlyHistory: {
         providers: [
           {
             provider: "google",
@@ -157,9 +160,9 @@ test("includes tooltip lines with source labels", () => {
   controller.render(mockService.getSnapshot());
 
   const tooltip = controller.item.tooltip.value;
-  assert(tooltip.includes("Claude: 5% (live)"));
-  assert(tooltip.includes("Codex: 4% (live)"));
-  assert(tooltip.includes("Gemini: $5.00 (estimated local 5h)"));
+  assert(tooltip.includes("Claude: 5% (reset in 3h 1m)"));
+  assert(tooltip.includes("Codex: 4% (reset in 2h 12m)"));
+  assert(tooltip.includes("Gemini: $5.00 (estimated)"));
   assert(tooltip.includes("Updated"));
 });
 
@@ -190,7 +193,7 @@ test("shows charge instead of 5h percent when the 7d window is fully used", () =
   controller.render(mockService.getSnapshot());
 
   assert.equal(controller.item.text, "❋ $9.25");
-  assert(controller.item.tooltip.value.includes("Claude: $9.25 (vendor billing)"));
+  assert(controller.item.tooltip.value.includes("Claude: $9.25 (actual)"));
 });
 
 test("uses estimated local 5h source label for fallback charges", () => {
@@ -205,6 +208,9 @@ test("uses estimated local 5h source label for fallback charges", () => {
         ],
       },
       rollingFiveHourHistory: {
+        providers: [],
+      },
+      monthlyHistory: {
         providers: [
           {
             provider: "google",
@@ -221,7 +227,7 @@ test("uses estimated local 5h source label for fallback charges", () => {
   controller.render(mockService.getSnapshot());
 
   const tooltip = controller.item.tooltip.value;
-  assert(tooltip.includes("Gemini: $2.50 (estimated local 5h)"));
+  assert(tooltip.includes("Gemini: $2.50 (estimated)"));
 });
 
 test("sets warning background when diagnostics exist", () => {

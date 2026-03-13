@@ -14,6 +14,7 @@ class DashboardService {
     this.snapshot = {
       historyWindow: "24h",
       history: null,
+      monthlyHistory: null,
       rollingFiveHourHistory: null,
       estimatedSevenHour: null,
       live: { providers: [], diagnostics: [], refreshedAt: 0 },
@@ -90,6 +91,7 @@ class DashboardService {
     const config = this.getConfiguration();
     const diagnostics = [];
     let history = null;
+    let monthlyHistory = null;
     let rollingFiveHourHistory = null;
     let estimatedSevenHour = null;
     let live = { providers: [], diagnostics: [], refreshedAt: 0 };
@@ -106,6 +108,12 @@ class DashboardService {
       diagnostics.push(`Rolling 5h unavailable: ${toMessage(error)}`);
     }
 
+    try {
+      monthlyHistory = await loadHistory(config.databasePath, "30d");
+    } catch (error) {
+      diagnostics.push(`Monthly history unavailable: ${toMessage(error)}`);
+    }
+
     if (config.showEstimated7h) {
       try {
         estimatedSevenHour = await loadHistory(config.databasePath, "7h");
@@ -115,12 +123,16 @@ class DashboardService {
     }
 
     try {
+      const previousAnthropicProvider = this.snapshot.live?.providers?.find((provider) => provider.provider === "anthropic") ?? null;
       live = await loadLiveUsage(
         {
           openCodeAuthPath: config.openCodeAuthPath,
           codexAuthPath: config.codexAuthPath,
         },
-        this.liveState,
+        {
+          ...this.liveState,
+          anthropicProvider: this.liveState.anthropicProvider ?? previousAnthropicProvider,
+        },
       );
       this.liveState = live.state;
     } catch (error) {
@@ -132,6 +144,7 @@ class DashboardService {
       historyWindow: config.historyWindow,
       showEstimated7h: config.showEstimated7h,
       history,
+      monthlyHistory,
       rollingFiveHourHistory,
       estimatedSevenHour,
       live,

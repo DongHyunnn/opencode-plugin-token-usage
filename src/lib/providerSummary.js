@@ -1,16 +1,27 @@
 const { normalizeProvider } = require("./history");
 const { PROVIDER_CATALOG } = require("./providerCatalog");
+const { getProviderPolicy } = require("./providerPolicies");
 
-function selectProviderSummaries(liveProviders = [], rollingFiveHourHistory = null) {
+function selectProviderSummaries(liveProviders = [], rollingFiveHourHistory = null, monthlyHistory = null) {
   const liveByProvider = indexProviders(liveProviders);
-  const historyByProvider = indexProviders(rollingFiveHourHistory?.providers);
+  const rollingHistoryByProvider = indexProviders(rollingFiveHourHistory?.providers);
+  const monthlyHistoryByProvider = indexProviders(monthlyHistory?.providers);
   const summaries = [];
 
   for (const { id } of PROVIDER_CATALOG) {
     const liveProvider = liveByProvider.get(id);
+    const policy = getProviderPolicy(id);
     const livePercent = getLivePercent(liveProvider);
     if (livePercent !== null) {
-      summaries.push({ provider: id, source: "live", kind: "percent", value: livePercent, estimated: false });
+      const resetText = getPreferredResetText(liveProvider);
+      summaries.push({
+        provider: id,
+        source: "live",
+        kind: "percent",
+        value: livePercent,
+        estimated: false,
+        ...(resetText ? { resetText } : {}),
+      });
       continue;
     }
 
@@ -20,9 +31,12 @@ function selectProviderSummaries(liveProviders = [], rollingFiveHourHistory = nu
       continue;
     }
 
-    const localCharge = getLocalCharge(historyByProvider.get(id));
+    const localHistoryProvider = policy?.preferredLocalChargeWindow === "monthly"
+      ? monthlyHistoryByProvider.get(id)
+      : rollingHistoryByProvider.get(id);
+    const localCharge = getLocalCharge(localHistoryProvider);
     if (localCharge !== null) {
-      summaries.push({ provider: id, source: "local", kind: "charge", value: localCharge, estimated: true });
+      summaries.push({ provider: id, source: policy?.localChargeSource ?? "local", kind: "charge", value: localCharge, estimated: true });
     }
   }
 
@@ -34,13 +48,15 @@ function selectProviderSummaries(liveProviders = [], rollingFiveHourHistory = nu
  * Used by the Live Billing card so that real billing data is always surfaced
  * even when the provider also has live rate-limit windows.
  */
-function selectBillingProviderSummaries(liveProviders = [], rollingFiveHourHistory = null) {
+function selectBillingProviderSummaries(liveProviders = [], rollingFiveHourHistory = null, monthlyHistory = null) {
   const liveByProvider = indexProviders(liveProviders);
-  const historyByProvider = indexProviders(rollingFiveHourHistory?.providers);
+  const rollingHistoryByProvider = indexProviders(rollingFiveHourHistory?.providers);
+  const monthlyHistoryByProvider = indexProviders(monthlyHistory?.providers);
   const summaries = [];
 
   for (const { id } of PROVIDER_CATALOG) {
     const liveProvider = liveByProvider.get(id);
+    const policy = getProviderPolicy(id);
 
     const vendorCharge = getVendorCharge(liveProvider);
     if (vendorCharge !== null) {
@@ -54,9 +70,12 @@ function selectBillingProviderSummaries(liveProviders = [], rollingFiveHourHisto
       continue;
     }
 
-    const localCharge = getLocalCharge(historyByProvider.get(id));
+    const localHistoryProvider = policy?.preferredLocalChargeWindow === "monthly"
+      ? monthlyHistoryByProvider.get(id)
+      : rollingHistoryByProvider.get(id);
+    const localCharge = getLocalCharge(localHistoryProvider);
     if (localCharge !== null) {
-      summaries.push({ provider: id, source: "local", kind: "charge", value: localCharge, estimated: true });
+      summaries.push({ provider: id, source: policy?.localChargeSource ?? "local", kind: "charge", value: localCharge, estimated: true });
     }
   }
 
@@ -91,6 +110,15 @@ function getLivePercent(provider) {
 
   const preferredWindow = windows[0];
   return getFiniteNumber(preferredWindow?.percentUsed);
+}
+
+function getPreferredResetText(provider) {
+  if (!provider) return null;
+  const windows = Array.isArray(provider.windows) ? provider.windows : [];
+  const fiveHourWindow = windows.find(isFiveHourWindow);
+  if (fiveHourWindow?.resetText) return fiveHourWindow.resetText;
+  const preferredWindow = windows[0];
+  return preferredWindow?.resetText ?? null;
 }
 
 function isFiveHourWindow(window) {

@@ -20,6 +20,7 @@
     "onView:opencodeTokenUsage.dashboard",
     "onCommand:opencodeTokenUsage.refresh",
     "onCommand:opencodeTokenUsage.selectWindow",
+    "onCommand:opencodeTokenUsage.installTrackingPlugin",
     "onCommand:opencodeTokenUsage.openDashboard"
   ],
   "contributes": {
@@ -35,6 +36,10 @@
       {
         "command": "opencodeTokenUsage.selectWindow",
         "title": "OpenCode Token Usage: Select History Window"
+      },
+      {
+        "command": "opencodeTokenUsage.installTrackingPlugin",
+        "title": "OpenCode Token Usage: Install Tracking Plugin"
       }
     ],
     "viewsContainers": {
@@ -63,6 +68,11 @@
         },
         {
           "command": "opencodeTokenUsage.selectWindow",
+          "when": "view == opencodeTokenUsage.dashboard",
+          "group": "navigation"
+        },
+        {
+          "command": "opencodeTokenUsage.installTrackingPlugin",
           "when": "view == opencodeTokenUsage.dashboard",
           "group": "navigation"
         }
@@ -103,7 +113,8 @@
             "1h",
             "7h",
             "24h",
-            "7d"
+            "7d",
+            "30d"
           ],
           "description": "Default OpenCode history window shown in the status bar and dashboard."
         },

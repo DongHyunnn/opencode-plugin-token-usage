@@ -11,10 +11,21 @@ A VS Code/Cursor extension that combines two sources of truth:
 - a native dashboard tree view with:
   - `Live Rate Limits`
   - `Live Billing`
+  - `Monthly Billing`
+  - `Monthly Tokens`
   - `Local History`
   - optional `Estimated 7h`
   - `Diagnostics`
-- user-selectable local history windows: `1h`, `7h`, `24h`, `7d`
+- user-selectable local history windows: `1h`, `7h`, `24h`, `7d`, `30d`
+
+## Installation
+
+- Install the extension in VS Code or Cursor by opening this folder and launching the Extension Development Host.
+- For a packaged install, build a VSIX with the standard VS Code extension workflow and install that VSIX in VS Code or Cursor.
+- Local history works immediately as long as `sqlite3` is available on `PATH`.
+- To install the companion token-tracking plugin, run `OpenCode Token Usage: Install Tracking Plugin` from the command palette or the dashboard title actions.
+- The command copies `opencode-token-usage-tracker.js` into `~/.config/opencode/plugins/`.
+- Restart OpenCode after installation so the tracker plugin is loaded.
 
 ## How it works
 

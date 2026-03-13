@@ -10,7 +10,7 @@ function buildHistoryQuery(startAt) {
     SELECT
       COALESCE(json_extract(data, '$.providerID'), 'unknown') AS provider,
       COUNT(*) AS messageCount,
-      SUM(COALESCE(json_extract(data, '$.tokens.total'), 0)) AS totalTokens,
+      SUM(COALESCE(json_extract(data, '$.tokens.total'), 0) - COALESCE(json_extract(data, '$.tokens.cache.read'), 0)) AS totalTokens,
       SUM(COALESCE(json_extract(data, '$.tokens.input'), 0)) AS inputTokens,
       SUM(COALESCE(json_extract(data, '$.tokens.output'), 0)) AS outputTokens,
       SUM(COALESCE(json_extract(data, '$.tokens.reasoning'), 0)) AS reasoningTokens,

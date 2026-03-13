@@ -20,6 +20,7 @@ const WINDOW_OPTIONS = {
   "7h": { key: "7h", label: "Last 7 hours", ms: 7 * 60 * 60 * 1000 },
   "24h": { key: "24h", label: "Last 24 hours", ms: 24 * 60 * 60 * 1000 },
   "7d": { key: "7d", label: "Last 7 days", ms: 7 * 24 * 60 * 60 * 1000 },
+  "30d": { key: "30d", label: "Last 30 days", ms: 30 * 24 * 60 * 60 * 1000 },
 };
 
 const ROLLING_FIVE_HOUR_WINDOW = { key: "5h", label: "Last 5 hours", ms: 5 * 60 * 60 * 1000 };

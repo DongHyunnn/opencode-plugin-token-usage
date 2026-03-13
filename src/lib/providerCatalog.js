@@ -6,12 +6,15 @@
  * Downstream tasks (ordering, labels, icons) must consume this module directly.
  */
 
+const { PROVIDER_POLICIES } = require("./providerPolicies");
+
 /** @type {ReadonlyArray<{id: string, label: string, icon: string, order: number}>} */
-const PROVIDER_CATALOG = Object.freeze([
-  { id: "anthropic", label: "Claude", icon: "❋", order: 1 },
-  { id: "openai", label: "Codex", icon: "֎", order: 2 },
-  { id: "google", label: "Gemini", icon: "✦", order: 3 },
-]);
+const PROVIDER_CATALOG = Object.freeze(PROVIDER_POLICIES.map(({ id, label, icon, order }) => ({
+  id,
+  label,
+  icon,
+  order,
+})));
 
 /** Set of recognized provider ids for fast membership checks. */
 const RECOGNIZED_IDS = new Set(PROVIDER_CATALOG.map((p) => p.id));

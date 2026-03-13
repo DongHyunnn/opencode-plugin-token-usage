@@ -2,6 +2,7 @@ const vscode = require("vscode");
 const { formatRelativeAge, formatCurrency } = require("../lib/time");
 const { selectProviderSummaries } = require("../lib/providerSummary");
 const { getCatalogEntry } = require("../lib/providerCatalog");
+const { getSourceLabel } = require("../lib/providerPolicies");
 
 class StatusBarController {
   constructor(service) {
@@ -24,7 +25,8 @@ class StatusBarController {
   render(snapshot) {
     const liveProviders = snapshot.live.providers || [];
     const rollingFiveHourHistory = snapshot.rollingFiveHourHistory;
-    const summaries = selectProviderSummaries(liveProviders, rollingFiveHourHistory);
+    const monthlyHistory = snapshot.monthlyHistory;
+    const summaries = selectProviderSummaries(liveProviders, rollingFiveHourHistory, monthlyHistory);
 
     const statusParts = summaries.map((summary) => {
       const catalogEntry = getCatalogEntry(summary.provider);
@@ -49,7 +51,7 @@ class StatusBarController {
       const catalogEntry = getCatalogEntry(summary.provider);
       if (!catalogEntry) return null;
 
-      const sourceLabel = getSourceLabel(summary.source);
+      const sourceLabel = getSourceLabel(summary.provider, summary.source, summary.resetText);
       if (summary.kind === "percent") {
         return `${catalogEntry.label}: ${summary.value}% (${sourceLabel})`;
       } else if (summary.kind === "charge") {
@@ -68,19 +70,6 @@ class StatusBarController {
     }
 
     this.item.tooltip = new vscode.MarkdownString(tooltipLines.join("  \n"));
-  }
-}
-
-function getSourceLabel(source) {
-  switch (source) {
-    case "live":
-      return "live";
-    case "vendor":
-      return "vendor billing";
-    case "local":
-      return "estimated local 5h";
-    default:
-      return source;
   }
 }
 

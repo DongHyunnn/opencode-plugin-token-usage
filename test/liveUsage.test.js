@@ -97,13 +97,15 @@ test("normalizeAnthropicUsage extracts rate limits and billing", () => {
   const normalized = normalizeAnthropicUsage({
     five_hour: { utilization: 0.25, resets_at: Date.now() + 3600_000 },
     seven_day: { utilization: 0.5, resets_at: Date.now() + 7200_000 },
-    extra_usage: { is_enabled: true, used_credits: 20, monthly_limit: 100 },
+    extra_usage: { is_enabled: true, used_credits: 6237, monthly_limit: 15000 },
   });
 
   assert.equal(normalized.provider, "anthropic");
   assert.equal(normalized.windows.length, 2);
   assert.equal(normalized.windows[0].percentUsed, 25);
-  assert.equal(normalized.billing.percentUsed, 20);
+  assert.equal(normalized.billing.amountUsed, 62.37);
+  assert.equal(normalized.billing.amountLimit, 150);
+  assert.equal(normalized.billing.percentUsed, 42);
 });
 
 test("normalizeCodexUsage extracts primary and secondary windows", () => {
@@ -295,6 +297,33 @@ test("loadLiveUsage reports Anthropic refresh failures distinctly", async () => 
     "Codex not configured",
     "Gemini API key missing or invalid",
   ]);
+});
+
+test("loadLiveUsage preserves the last Claude provider during Anthropic backoff", async () => {
+  const paths = await createAuthPaths({ google: { key: "gemini-api-key" } });
+
+  const result = await loadLiveUsage(paths, {
+    anthropicBackoffUntil: Date.now() + 60_000,
+    anthropicProvider: {
+      provider: "anthropic",
+      label: "Claude",
+      windows: [{ id: "anthropic-5h", label: "5h", percentUsed: 12, resetText: "2h 1m" }],
+      billing: null,
+      limitReached: false,
+    },
+  });
+
+  assert.deepEqual(result.providers, [
+    {
+      provider: "anthropic",
+      label: "Claude",
+      windows: [{ id: "anthropic-5h", label: "5h", percentUsed: 12, resetText: "2h 1m" }],
+      billing: null,
+      limitReached: false,
+    },
+    normalizeGeminiUsage(),
+  ]);
+  assert.deepEqual(result.diagnostics, ["Claude rate limited; using backoff window", "Codex not configured"]);
 });
 
 test("loadLiveUsage reports non-throwing diagnostics when Codex auth and google entry are both absent", async () => {

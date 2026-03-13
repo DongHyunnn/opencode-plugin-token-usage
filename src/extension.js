@@ -3,6 +3,7 @@ const { DashboardService } = require("./lib/dashboardService");
 const { DashboardTreeProvider } = require("./ui/treeProvider");
 const { StatusBarController } = require("./ui/statusBar");
 const { WINDOW_OPTIONS } = require("./constants");
+const { installTrackingPlugin } = require("./lib/pluginInstall");
 
 async function activate(context) {
   const service = new DashboardService(context);
@@ -37,6 +38,15 @@ async function activate(context) {
       await vscode.commands.executeCommand("workbench.view.extension.opencodeTokenUsage");
       if (treeView.visible) {
         await service.refresh("open-dashboard");
+      }
+    }),
+    vscode.commands.registerCommand("opencodeTokenUsage.installTrackingPlugin", async () => {
+      try {
+        const result = await installTrackingPlugin(context);
+        const detail = result.existed ? "Tracking plugin already installed. Restart OpenCode to reload it." : "Tracking plugin installed. Restart OpenCode to load it.";
+        await vscode.window.showInformationMessage(detail);
+      } catch (error) {
+        await vscode.window.showErrorMessage(`Failed to install tracking plugin: ${error instanceof Error ? error.message : String(error)}`);
       }
     }),
   );

@@ -3,6 +3,7 @@ const { formatCurrency, formatNumber, formatRelativeAge } = require("../lib/time
 const { WINDOW_OPTIONS } = require("../constants");
 const { selectBillingProviderSummaries } = require("../lib/providerSummary");
 const { getCatalogEntry } = require("../lib/providerCatalog");
+const { getSourceLabel } = require("../lib/providerPolicies");
 
 class DashboardTreeProvider {
   constructor(service) {
@@ -26,6 +27,8 @@ class DashboardTreeProvider {
       return [
         buildSection("Live Rate Limits", "rate-limit-card"),
         buildSection("Live Billing", "billing-card"),
+        buildSection("Monthly Billing", "monthly-billing-card"),
+        buildSection("Monthly Tokens", "monthly-tokens-card"),
         buildSection("Local History", "history-card"),
         ...(snapshot.showEstimated7h ? [buildSection("Estimated 7h", "seven-hour-card")] : []),
         buildSection("Diagnostics", "diagnostics-card"),
@@ -37,6 +40,10 @@ class DashboardTreeProvider {
         return buildRateLimitChildren(snapshot);
       case "billing-card":
         return buildBillingChildren(snapshot);
+      case "monthly-billing-card":
+        return buildMonthlyBillingChildren(snapshot);
+      case "monthly-tokens-card":
+        return buildMonthlyTokenChildren(snapshot);
       case "history-card":
         return buildHistoryChildren(snapshot);
       case "seven-hour-card":
@@ -72,7 +79,13 @@ function buildRateLimitChildren(snapshot) {
     if (!provider.windows?.length) continue;
     items.push(buildLeaf(provider.label, provider.limitReached ? "limit reached" : `${provider.windows.length} windows`));
     for (const window of provider.windows) {
-      items.push(buildLeaf(`  ${window.label}`, `${window.percentUsed}% used`, `Resets in ${window.resetText}`));
+      items.push(
+        buildLeaf(
+          `  ${window.label}`,
+          `${window.percentUsed}% used (reset in ${window.resetText})`,
+          `${window.label}: ${window.percentUsed}% used (reset in ${window.resetText})`,
+        ),
+      );
     }
   }
 
@@ -82,7 +95,8 @@ function buildRateLimitChildren(snapshot) {
 function buildBillingChildren(snapshot) {
   const liveProviders = snapshot.live?.providers || [];
   const rollingFiveHourHistory = snapshot.rollingFiveHourHistory || null;
-  const summaries = selectBillingProviderSummaries(liveProviders, rollingFiveHourHistory);
+  const monthlyHistory = snapshot.monthlyHistory || null;
+  const summaries = selectBillingProviderSummaries(liveProviders, rollingFiveHourHistory, monthlyHistory);
 
   if (!summaries.length) {
     return [buildLeaf("Billing unavailable", "No live provider data")];
@@ -95,24 +109,56 @@ function buildBillingChildren(snapshot) {
     if (summary.kind === "percent") {
       return buildLeaf(label, `${summary.value}% used`, `Live rate-limit window: ${summary.value}% used`);
     } else if (summary.kind === "charge") {
-      const sourceLabel = getBillingSourceLabel(summary.source);
+      const sourceLabel = getSourceLabel(summary.provider, summary.source);
       return buildLeaf(label, `${formatCurrency(summary.value)} (${sourceLabel})`, `${sourceLabel}: ${formatCurrency(summary.value)}`);
     }
     return buildLeaf(label, "Unavailable");
   });
 }
 
-function getBillingSourceLabel(source) {
-  switch (source) {
-    case "live":
-      return "live";
-    case "vendor":
-      return "vendor billing";
-    case "local":
-      return "estimated local 5h";
-    default:
-      return source;
+function buildMonthlyBillingChildren(snapshot) {
+  const monthlyHistory = snapshot.monthlyHistory;
+  if (!monthlyHistory) {
+    return [buildLeaf("Monthly billing unavailable", "Check database path")];
   }
+
+  const items = [
+    buildLeaf("Window", monthlyHistory.window?.label || "Last 30 days"),
+    buildLeaf("Estimated billing", formatCurrency(monthlyHistory.totalCost), "Estimated from OpenCode local history"),
+  ];
+
+  for (const provider of monthlyHistory.providers) {
+    const catalogEntry = getCatalogEntry(provider.provider);
+    const label = catalogEntry ? catalogEntry.label : provider.provider;
+    items.push(
+      buildLeaf(label, formatCurrency(provider.totalCost), `${formatNumber(provider.totalTokens)} tok · estimated from OpenCode local history`),
+    );
+  }
+
+  return items;
+}
+
+function buildMonthlyTokenChildren(snapshot) {
+  const monthlyHistory = snapshot.monthlyHistory;
+  if (!monthlyHistory) {
+    return [buildLeaf("Monthly tokens unavailable", "Check database path")];
+  }
+
+  const items = [
+    buildLeaf("Window", monthlyHistory.window?.label || "Last 30 days"),
+    buildLeaf("Total tokens", formatNumber(monthlyHistory.totalTokens)),
+    buildLeaf("Messages", formatNumber(monthlyHistory.totalMessages)),
+  ];
+
+  for (const provider of monthlyHistory.providers) {
+    const catalogEntry = getCatalogEntry(provider.provider);
+    const label = catalogEntry ? catalogEntry.label : provider.provider;
+    items.push(
+      buildLeaf(label, `${formatNumber(provider.totalTokens)} tok`, `${formatNumber(provider.inputTokens)} in · ${formatNumber(provider.outputTokens)} out · ${formatNumber(provider.reasoningTokens)} reasoning`),
+    );
+  }
+
+  return items;
 }
 
 function buildHistoryChildren(snapshot) {
@@ -120,12 +166,12 @@ function buildHistoryChildren(snapshot) {
     return [buildLeaf("History unavailable", "Check database path")];
   }
 
-  const history = snapshot.history;
+    const history = snapshot.history;
   const items = [
     buildLeaf("Window", WINDOW_OPTIONS[snapshot.historyWindow]?.label || snapshot.historyWindow),
     buildLeaf("Total tokens", formatNumber(history.totalTokens)),
     buildLeaf("Messages", formatNumber(history.totalMessages)),
-    buildLeaf("Cost", formatCurrency(history.totalCost)),
+    buildLeaf("Estimated billing", formatCurrency(history.totalCost), "Estimated from OpenCode local history"),
     buildLeaf("Freshness", `${formatRelativeAge(snapshot.refreshedAt)} ago`, "Local history refresh age"),
   ];
 
@@ -162,6 +208,8 @@ function buildDiagnosticsChildren(snapshot) {
 
 module.exports = {
   DashboardTreeProvider,
+  buildMonthlyBillingChildren,
+  buildMonthlyTokenChildren,
   buildEstimatedSevenHourChildren,
   buildBillingChildren,
 };

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { selectProviderSummaries } = require("../src/lib/providerSummary");
+const { selectProviderSummaries, selectBillingProviderSummaries } = require("../src/lib/providerSummary");
 
 test("selectProviderSummaries prefers live percent over vendor billing and local cost", () => {
   const summaries = selectProviderSummaries(
@@ -95,12 +95,25 @@ test("selectProviderSummaries still shows 5h percent when provider-level limitRe
 });
 
 test("selectProviderSummaries falls back to estimated local 5h charge", () => {
-  const summaries = selectProviderSummaries([], {
+  const summaries = selectProviderSummaries([], null, {
     providers: [{ provider: "google", totalCost: 5 }],
   });
 
   assert.deepEqual(summaries, [
-    { provider: "google", source: "local", kind: "charge", value: 5, estimated: true },
+    { provider: "google", source: "monthly", kind: "charge", value: 5, estimated: true },
+  ]);
+});
+
+test("selectProviderSummaries keeps non-Gemini local fallback on rolling 5h history", () => {
+  const summaries = selectProviderSummaries(
+    [],
+    { providers: [{ provider: "openai", totalCost: 4.75 }] },
+    { providers: [{ provider: "google", totalCost: 9.5 }] },
+  );
+
+  assert.deepEqual(summaries, [
+    { provider: "openai", source: "local", kind: "charge", value: 4.75, estimated: true },
+    { provider: "google", source: "monthly", kind: "charge", value: 9.5, estimated: true },
   ]);
 });
 
@@ -196,5 +209,18 @@ test("selectProviderSummaries returns summaries in provider catalog order", () =
     { provider: "anthropic", source: "live", kind: "percent", value: 41, estimated: false },
     { provider: "openai", source: "local", kind: "charge", value: 2, estimated: true },
     { provider: "google", source: "vendor", kind: "charge", value: 4, estimated: false },
+  ]);
+});
+
+test("selectBillingProviderSummaries uses provider-managed local charge windows", () => {
+  const summaries = selectBillingProviderSummaries(
+    [],
+    { providers: [{ provider: "openai", totalCost: 2.5 }] },
+    { providers: [{ provider: "google", totalCost: 9.75 }] },
+  );
+
+  assert.deepEqual(summaries, [
+    { provider: "openai", source: "local", kind: "charge", value: 2.5, estimated: true },
+    { provider: "google", source: "monthly", kind: "charge", value: 9.75, estimated: true },
   ]);
 });
