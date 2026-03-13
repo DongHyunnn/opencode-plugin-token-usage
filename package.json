@@ -13,6 +13,7 @@
   "bugs": {
     "url": "https://github.com/DongHyunnn/opencode-plugin-token-usage/issues"
   },
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.96.0"
   },
