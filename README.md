@@ -20,7 +20,7 @@ A VS Code/Cursor extension that combines two sources of truth:
 
 ## Installation
 
-- Install from the marketplace when it is published there, or install a GitHub release VSIX directly.
+- Install from the marketplace, or download a VSIX from GitHub Releases and install it directly.
 - For local development, open this folder in VS Code or Cursor and launch the Extension Development Host.
 - Local history works immediately as long as `sqlite3` is available on `PATH`.
 - To install the companion token-tracking plugin, run `OpenCode Token Usage: Install Tracking Plugin` from the command palette or the dashboard title actions.
@@ -28,6 +28,10 @@ A VS Code/Cursor extension that combines two sources of truth:
 - Restart OpenCode after installation so the tracker plugin is loaded.
 
 ### GitHub / VSIX install
+
+Download the latest `.vsix` asset from the GitHub Releases page:
+
+`https://github.com/DongHyunnn/opencode-plugin-token-usage/releases`
 
 Build a VSIX locally:
 
@@ -72,13 +76,13 @@ npm run install:vsix:cursor
 Once the extension is published, install it from the VS Code extensions view by searching for `OpenCode Token Usage`, or from the CLI with:
 
 ```bash
-code --install-extension donghyunnn.opencode-token-usage-extension
+code --install-extension DongHyunnn.opencode-token-usage-extension
 ```
 
 Cursor officially supports extension installation from the Extensions UI. If the `cursor` shell command is available and the same extension id is resolvable there, the equivalent command is:
 
 ```bash
-cursor --install-extension donghyunnn.opencode-token-usage-extension
+cursor --install-extension DongHyunnn.opencode-token-usage-extension
 ```
 
 ## How it works

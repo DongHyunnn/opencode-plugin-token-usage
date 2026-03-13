@@ -1,0 +1,45 @@
+name: Release Extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  package-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Package VSIX
+        run: npm run package:vsix
+
+      - name: Resolve VSIX name
+        id: vsix
+        run: echo "file=$(node -p \"const p=require('./package.json'); '${p.name}-${p.version}.vsix'\")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload VSIX to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.vsix.outputs.file }}
+
+      - name: Publish to VS Code Marketplace
+        if: github.event_name == 'release'
+        run: npx @vscode/vsce publish --packagePath "${{ steps.vsix.outputs.file }}" --pat "${{ secrets.VSCE_PAT }}"
