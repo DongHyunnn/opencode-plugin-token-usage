@@ -139,6 +139,7 @@
     "dev": "node ./scripts/dev.js",
     "test": "node --test",
     "package:vsix": "npx @vscode/vsce package",
+    "publish:ovsx": "npx ovsx publish",
     "install:vsix:vscode": "node ./scripts/install-vsix.js code",
     "install:vsix:cursor": "node ./scripts/install-vsix.js cursor",
     "install:vsix:vscode:dry-run": "node ./scripts/install-vsix.js code --dry-run",

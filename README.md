@@ -85,6 +85,18 @@ Cursor officially supports extension installation from the Extensions UI. If the
 cursor --install-extension DongHyunnn.opencode-token-usage-extension
 ```
 
+### Open VSX / Cursor install
+
+For Cursor/Open VSX compatibility, publish the same extension to Open VSX and install it from the Open VSX-backed extensions UI in Cursor.
+
+If you want to publish manually after creating your Open VSX namespace and token:
+
+```bash
+npm run publish:ovsx -- -p "$OVSX_PAT"
+```
+
+The release workflow also supports Open VSX publishing when the repository secret `OVSX_PAT` is configured.
+
 ## How it works
 
 - OpenCode history is read from the local SQLite `message` table, which already stores provider, model, token, cost, and timestamp metadata.
