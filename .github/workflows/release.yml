@@ -13,10 +13,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -32,7 +32,10 @@ jobs:
 
       - name: Resolve VSIX name
         id: vsix
-        run: echo "file=$(node -e \"const p=require('./package.json'); process.stdout.write(p.name + '-' + p.version + '.vsix')\")" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          VSIX_FILE="$(node -p "const p=require('./package.json'); p.name + '-' + p.version + '.vsix'")"
+          echo "file=$VSIX_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload VSIX to GitHub Release
         if: github.event_name == 'release'
