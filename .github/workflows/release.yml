@@ -45,5 +45,7 @@ jobs:
         run: npx @vscode/vsce publish --packagePath "${{ steps.vsix.outputs.file }}" --pat "${{ secrets.VSCE_PAT }}"
 
       - name: Publish to Open VSX
-        if: github.event_name == 'release' && secrets.OVSX_PAT != ''
-        run: npx ovsx publish "${{ steps.vsix.outputs.file }}" -p "${{ secrets.OVSX_PAT }}"
+        if: github.event_name == 'release' && env.OVSX_PAT != ''
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish "${{ steps.vsix.outputs.file }}" -p "$OVSX_PAT"
