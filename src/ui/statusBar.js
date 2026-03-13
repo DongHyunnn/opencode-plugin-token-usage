@@ -9,7 +9,7 @@ class StatusBarController {
     this.service = service;
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.item.command = "opencodeTokenUsage.openDashboard";
-    this.item.name = "OpenCode Token Usage";
+    this.item.name = "OTU: OpenCode Token Usage";
     this.service.onDidChange((snapshot) => this.render(snapshot));
   }
 

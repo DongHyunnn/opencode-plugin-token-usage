@@ -1,6 +1,6 @@
 {
   "name": "opencode-token-usage-extension",
-  "displayName": "OpenCode Token Usage",
+  "displayName": "OTU: OpenCode Token Usage",
   "description": "VS Code/Cursor extension that shows OpenCode token history plus live provider rate limits and billing.",
   "version": "2.0.0",
   "publisher": "DongHyunnn",
@@ -31,26 +31,26 @@
     "commands": [
       {
         "command": "opencodeTokenUsage.openDashboard",
-        "title": "OpenCode Token Usage: Open Dashboard"
+        "title": "OTU: OpenCode Token Usage: Open Dashboard"
       },
       {
         "command": "opencodeTokenUsage.refresh",
-        "title": "OpenCode Token Usage: Refresh"
+        "title": "OTU: OpenCode Token Usage: Refresh"
       },
       {
         "command": "opencodeTokenUsage.selectWindow",
-        "title": "OpenCode Token Usage: Select History Window"
+        "title": "OTU: OpenCode Token Usage: Select History Window"
       },
       {
         "command": "opencodeTokenUsage.installTrackingPlugin",
-        "title": "OpenCode Token Usage: Install Tracking Plugin"
+        "title": "OTU: OpenCode Token Usage: Install Tracking Plugin"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
           "id": "opencodeTokenUsage",
-          "title": "OpenCode Usage",
+          "title": "OTU: OpenCode Token Usage",
           "icon": "media/activity.svg"
         }
       ]
@@ -83,7 +83,7 @@
       ]
     },
     "configuration": {
-      "title": "OpenCode Token Usage",
+      "title": "OTU: OpenCode Token Usage",
       "properties": {
         "opencodeTokenUsage.databasePath": {
           "type": "string",

@@ -1,4 +1,4 @@
-# OpenCode Token Usage
+# OTU: OpenCode Token Usage
 
 A VS Code/Cursor extension that combines two sources of truth:
 
@@ -23,7 +23,7 @@ A VS Code/Cursor extension that combines two sources of truth:
 - Install from the marketplace, or download a VSIX from GitHub Releases and install it directly.
 - For local development, open this folder in VS Code or Cursor and launch the Extension Development Host.
 - Local history works immediately as long as `sqlite3` is available on `PATH`.
-- To install the companion token-tracking plugin, run `OpenCode Token Usage: Install Tracking Plugin` from the command palette or the dashboard title actions.
+- To install the companion token-tracking plugin, run `OTU: OpenCode Token Usage: Install Tracking Plugin` from the command palette or the dashboard title actions.
 - The command copies `opencode-token-usage-tracker.js` into `~/.config/opencode/plugins/`.
 - Restart OpenCode after installation so the tracker plugin is loaded.
 
@@ -73,7 +73,7 @@ npm run install:vsix:cursor
 
 ### Marketplace install
 
-Once the extension is published, install it from the VS Code extensions view by searching for `OpenCode Token Usage`, or from the CLI with:
+Once the extension is published, install it from the VS Code extensions view by searching for `OTU: OpenCode Token Usage`, or from the CLI with:
 
 ```bash
 code --install-extension DongHyunnn.opencode-token-usage-extension
@@ -136,7 +136,7 @@ Open the folder in VS Code or Cursor and run the extension host from the editor.
 
 ## Local testing
 
-- Cursor: open this folder and run the `Run OpenCode Token Usage Extension` launch configuration.
+- Cursor: open this folder and run the `Run OTU: OpenCode Token Usage Extension` launch configuration.
 - VS Code: same flow; the repo now includes `.vscode/launch.json`.
 - One-command launcher:
 
@@ -162,4 +162,4 @@ or
 code --extensionDevelopmentPath="$(pwd)"
 ```
 
-In the Extension Development Host, open the `OpenCode Usage` panel, then run `OpenCode Token Usage: Refresh` from the command palette if needed.
+In the Extension Development Host, open the `OTU: OpenCode Token Usage` panel, then run `OTU: OpenCode Token Usage: Refresh` from the command palette if needed.
