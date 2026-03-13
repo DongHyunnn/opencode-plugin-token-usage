@@ -20,12 +20,66 @@ A VS Code/Cursor extension that combines two sources of truth:
 
 ## Installation
 
-- Install the extension in VS Code or Cursor by opening this folder and launching the Extension Development Host.
-- For a packaged install, build a VSIX with the standard VS Code extension workflow and install that VSIX in VS Code or Cursor.
+- Install from the marketplace when it is published there, or install a GitHub release VSIX directly.
+- For local development, open this folder in VS Code or Cursor and launch the Extension Development Host.
 - Local history works immediately as long as `sqlite3` is available on `PATH`.
 - To install the companion token-tracking plugin, run `OpenCode Token Usage: Install Tracking Plugin` from the command palette or the dashboard title actions.
 - The command copies `opencode-token-usage-tracker.js` into `~/.config/opencode/plugins/`.
 - Restart OpenCode after installation so the tracker plugin is loaded.
+
+### GitHub / VSIX install
+
+Build a VSIX locally:
+
+```bash
+npm install
+npm run package:vsix
+```
+
+Install the generated VSIX in VS Code:
+
+```bash
+code --install-extension ./opencode-token-usage-extension-2.0.0.vsix
+```
+
+If the `cursor` shell command is available on your machine, you can use the same VSIX from Cursor:
+
+```bash
+cursor --install-extension ./opencode-token-usage-extension-2.0.0.vsix
+```
+
+Convenience scripts are included:
+
+```bash
+npm run install:vsix:vscode:dry-run
+npm run install:vsix:cursor:dry-run
+```
+
+Then run the real install command after packaging:
+
+```bash
+npm run install:vsix:vscode
+```
+
+or
+
+```bash
+npm run install:vsix:cursor
+```
+
+### Marketplace install
+
+Once the extension is published, install it from the VS Code extensions view by searching for `OpenCode Token Usage`, or from the CLI with:
+
+```bash
+code --install-extension donghyunnn.opencode-token-usage-extension
+```
+
+Cursor officially supports extension installation from the Extensions UI. If the `cursor` shell command is available and the same extension id is resolvable there, the equivalent command is:
+
+```bash
+cursor --install-extension donghyunnn.opencode-token-usage-extension
+```
 
 ## How it works
 
