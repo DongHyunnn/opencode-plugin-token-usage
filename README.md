@@ -43,13 +43,13 @@ npm run package:vsix
 Install the generated VSIX in VS Code:
 
 ```bash
-code --install-extension ./opencode-token-usage-extension-2.0.0.vsix
+code --install-extension ./opencode-token-usage-extension-2.0.1.vsix
 ```
 
 If the `cursor` shell command is available on your machine, you can use the same VSIX from Cursor:
 
 ```bash
-cursor --install-extension ./opencode-token-usage-extension-2.0.0.vsix
+cursor --install-extension ./opencode-token-usage-extension-2.0.1.vsix
 ```
 
 Convenience scripts are included:

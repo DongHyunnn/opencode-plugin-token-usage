@@ -295,5 +295,5 @@ test("preserves command and name properties", () => {
   const controller = new StatusBarController(mockService);
 
   assert.equal(controller.item.command, "opencodeTokenUsage.openDashboard");
-  assert.equal(controller.item.name, "OpenCode Token Usage");
+  assert.equal(controller.item.name, "OTU: OpenCode Token Usage");
 });

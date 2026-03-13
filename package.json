@@ -2,7 +2,7 @@
   "name": "opencode-token-usage-extension",
   "displayName": "OTU: OpenCode Token Usage",
   "description": "VS Code/Cursor extension that shows OpenCode token history plus live provider rate limits and billing.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "DongHyunnn",
   "license": "MIT",
   "repository": {
