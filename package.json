@@ -24,12 +24,7 @@
     "ui"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onView:opencodeTokenUsage.dashboard",
-    "onCommand:opencodeTokenUsage.refresh",
-    "onCommand:opencodeTokenUsage.selectWindow",
-    "onCommand:opencodeTokenUsage.installTrackingPlugin",
-    "onCommand:opencodeTokenUsage.openDashboard"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
