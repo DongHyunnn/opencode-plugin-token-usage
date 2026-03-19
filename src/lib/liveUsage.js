@@ -7,9 +7,30 @@ const {
   OPENAI_OAUTH_CLIENT_ID,
   ANTHROPIC_RATE_LIMIT_BACKOFF_MS,
 } = require("../constants");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
+const { runAuthenticatedUsage } = require("./authenticatedUsageRunner");
 const { readJson, writeJson } = require("./json");
+const {
+  acquireAnthropicLease,
+  acquireOpenAILease,
+  isAnthropicCacheFresh,
+  isOpenAICacheFresh,
+  readAnthropicSharedCache,
+  readOpenAISharedCache,
+  releaseAnthropicLease,
+  releaseOpenAILease,
+  waitForAnthropicSharedCache,
+  waitForOpenAISharedCache,
+  writeAnthropicSharedCache,
+  writeOpenAISharedCache,
+} = require("./anthropicSharedState");
 const { getProviderPolicy } = require("./providerPolicies");
 const { safePct, safeRawPct, formatReset } = require("./time");
+
+const execFileAsync = promisify(execFile);
+const GEMINI_CLI_COMMAND_CANDIDATES = ["gemini", "/usr/bin/gemini", "/usr/local/bin/gemini"];
+const GEMINI_CLI_TIMEOUT_MS = 4000;
 
 let anthropicRefreshInFlight = null;
 let openaiRefreshInFlight = null;
@@ -41,12 +62,6 @@ function getAnthropicAuthStatus(auth, { forceRefresh = false } = {}) {
   }
 
   return "not-configured";
-}
-
-function getAnthropicAuthDiagnostic(status) {
-  if (status === "expired") return "Claude auth expired";
-  if (status === "not-configured") return "Claude not configured";
-  return null;
 }
 
 function getAnthropicAuthFailureDiagnostic(error) {
@@ -104,12 +119,42 @@ function getCodexAuthFailureDiagnostic(error) {
   return `Codex auth failed: ${message}`;
 }
 
-function hasValidGoogleApiKey(googleAuth) {
-  return typeof googleAuth?.key === "string" && googleAuth.key.trim().length > 0;
+function normalizeGoogleApiKey(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function getGeminiAuthDiagnostic(googleAuth) {
-  return hasValidGoogleApiKey(googleAuth) ? null : "Gemini API key missing or invalid";
+function resolveGoogleApiKey(googleAuth, env = process.env) {
+  return normalizeGoogleApiKey(googleAuth?.key) || normalizeGoogleApiKey(env?.GOOGLE_API_KEY) || normalizeGoogleApiKey(env?.GEMINI_API_KEY);
+}
+
+function hasValidGoogleOAuth(googleAuth) {
+  if (!googleAuth || googleAuth.type !== "oauth") return false;
+  const hasRefreshToken = typeof googleAuth.refresh === "string" && googleAuth.refresh.trim().length > 0;
+  const hasAccessToken = typeof googleAuth.access === "string" && googleAuth.access.trim().length > 0;
+  if (hasRefreshToken) return true;
+  if (!hasAccessToken) return false;
+  if (!Number.isFinite(googleAuth.expires)) return true;
+  return !isTokenExpired(googleAuth.expires);
+}
+
+function hasGeminiPluginConfiguration(openCodeConfig) {
+  const projectId = normalizeGoogleProjectId(openCodeConfig?.provider?.google?.options?.projectId);
+  if (!projectId) return false;
+
+  const plugins = Array.isArray(openCodeConfig?.plugin) ? openCodeConfig.plugin : [];
+  return plugins.some((plugin) => typeof plugin === "string" && plugin.includes("opencode-gemini-auth"));
+}
+
+function normalizeGoogleProjectId(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasGeminiAuth(googleAuth, openCodeConfig, env = process.env) {
+  return Boolean(resolveGoogleApiKey(googleAuth, env) || hasValidGoogleOAuth(googleAuth) || hasGeminiPluginConfiguration(openCodeConfig));
+}
+
+function getGeminiAuthDiagnostic(googleAuth, openCodeConfig, env = process.env) {
+  return hasGeminiAuth(googleAuth, openCodeConfig, env) ? null : "Gemini API key missing or invalid";
 }
 
 function normalizeGeminiUsage() {
@@ -121,6 +166,116 @@ function normalizeGeminiUsage() {
     limitReached: null,
     estimateOnly: true,
   };
+}
+
+function normalizeGeminiCliUsage(quotaSnapshot) {
+  const pooledRemaining = Number(quotaSnapshot?.pooledRemaining);
+  const pooledLimit = Number(quotaSnapshot?.pooledLimit);
+  const pooledResetTime = quotaSnapshot?.pooledResetTime;
+  if (!Number.isFinite(pooledRemaining) || !Number.isFinite(pooledLimit) || pooledLimit <= 0) {
+    return null;
+  }
+
+  return {
+    provider: "google",
+    label: "Gemini",
+    windows: [{
+      id: "google-daily",
+      label: "1d",
+      percentUsed: safeRawPct(((pooledLimit - pooledRemaining) / pooledLimit) * 100),
+      resetText: formatReset(pooledResetTime),
+    }],
+    billing: null,
+    limitReached: pooledRemaining <= 0,
+    estimateOnly: false,
+  };
+}
+
+async function loadGeminiCliUsage(env = process.env, dependencies = {}) {
+  const exec = dependencies.execFileAsync || execFileAsync;
+  let sawGeminiCli = false;
+
+  for (const command of GEMINI_CLI_COMMAND_CANDIDATES) {
+    try {
+      const { stdout, stderr } = await exec(command, ["-o", "json", "-y", "/stats model"], {
+        env,
+        timeout: GEMINI_CLI_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      });
+      sawGeminiCli = true;
+      const quotaSnapshot = parseGeminiCliQuota(stdout || stderr || "");
+      if (!quotaSnapshot) {
+        return { provider: null, detected: true };
+      }
+
+      return { provider: normalizeGeminiCliUsage(quotaSnapshot), detected: true };
+    } catch (error) {
+      if (isMissingCommandError(error)) {
+        continue;
+      }
+
+      if (isGeminiCliUnavailableError(error)) {
+        sawGeminiCli = true;
+        continue;
+      }
+
+      return { provider: null, detected: sawGeminiCli };
+    }
+  }
+
+  return { provider: null, detected: sawGeminiCli };
+}
+
+function parseGeminiCliQuota(rawOutput) {
+  const jsonCandidate = extractJsonObject(rawOutput);
+  if (!jsonCandidate) return null;
+
+  try {
+    const parsed = JSON.parse(jsonCandidate);
+    return findGeminiQuotaSnapshot(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObject(rawOutput) {
+  if (typeof rawOutput !== "string") return null;
+  const startIndex = rawOutput.indexOf("{");
+  const endIndex = rawOutput.lastIndexOf("}");
+  if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+    return null;
+  }
+
+  return rawOutput.slice(startIndex, endIndex + 1);
+}
+
+function findGeminiQuotaSnapshot(value) {
+  if (!value || typeof value !== "object") return null;
+
+  if (hasGeminiQuotaFields(value)) {
+    return value;
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const found = findGeminiQuotaSnapshot(nestedValue);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function hasGeminiQuotaFields(value) {
+  return value && typeof value === "object" && (Object.hasOwn(value, "pooledRemaining") || Object.hasOwn(value, "pooledLimit"));
+}
+
+function isMissingCommandError(error) {
+  return Boolean(error && error.code === "ENOENT");
+}
+
+function isGeminiCliUnavailableError(error) {
+  if (!error) return false;
+  const message = getErrorMessage(error);
+  return error.code === "ETIMEDOUT" || message.includes("Please login") || message.includes("not authenticated") || message.includes("not logged in");
 }
 
 function normalizeAnthropicUsage(data) {
@@ -392,7 +547,197 @@ function isCodexAuthError(message) {
   return message.includes("Codex 401") || message.includes("Codex 403");
 }
 
-async function loadLiveUsage(paths, previousState = {}) {
+function createAnthropicSharedCache(state, diagnostics, refreshedAt = Date.now()) {
+  const anthropicDiagnostics = diagnostics.filter((diagnostic) => diagnostic.startsWith("Claude "));
+  return {
+    provider: state.anthropicProvider ?? null,
+    backoffUntil: state.anthropicBackoffUntil ?? 0,
+    diagnostics: anthropicDiagnostics,
+    refreshedAt,
+  };
+}
+
+function createOpenAISharedCache(provider, diagnostics, refreshedAt = Date.now()) {
+  const openAIDiagnostics = diagnostics.filter((diagnostic) => diagnostic.startsWith("Codex "));
+  return {
+    provider: provider ?? null,
+    diagnostics: openAIDiagnostics,
+    refreshedAt,
+  };
+}
+
+function applyAnthropicSharedCache(cache, providers, diagnostics, nextState, anthropicPolicy, now = Date.now()) {
+  if (!cache) return false;
+
+  if (cache.provider) {
+    nextState.anthropicProvider = cache.provider;
+  }
+  if (Number.isFinite(cache.backoffUntil)) {
+    nextState.anthropicBackoffUntil = Math.max(nextState.anthropicBackoffUntil ?? 0, cache.backoffUntil);
+  }
+
+  const anthropicDiagnostics = Array.isArray(cache.diagnostics) ? cache.diagnostics : [];
+  for (const diagnostic of anthropicDiagnostics) {
+    if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+  }
+
+  if ((now < (nextState.anthropicBackoffUntil ?? 0) || anthropicDiagnostics.length || cache.provider) && cache.provider && anthropicPolicy?.preserveLastKnownLiveProvider) {
+    providers.push(cache.provider);
+  }
+
+  return Boolean(cache.provider || anthropicDiagnostics.length || now < (nextState.anthropicBackoffUntil ?? 0));
+}
+
+function applyOpenAISharedCache(cache, providers, diagnostics) {
+  if (!cache) return false;
+
+  const openAIDiagnostics = Array.isArray(cache.diagnostics) ? cache.diagnostics : [];
+  for (const diagnostic of openAIDiagnostics) {
+    if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+  }
+
+  if (cache.provider) {
+    providers.push(cache.provider);
+  }
+
+  return Boolean(cache.provider || openAIDiagnostics.length);
+}
+
+async function loadAnthropicUsage(paths, nextState, now, anthropicPolicy, dependencies = {}) {
+  const providers = [];
+  const diagnostics = [];
+  const holderId = `pid-${process.pid}`;
+  const refreshIntervalSeconds = Number(paths.liveRefreshIntervalSeconds) || 45;
+  const sharedDependencies = dependencies.sharedState || {};
+  const cachedSnapshot = await readAnthropicSharedCache(paths.openCodeAuthPath, sharedDependencies);
+
+  if (cachedSnapshot?.provider) {
+    nextState.anthropicProvider = cachedSnapshot.provider;
+  }
+  if (Number.isFinite(cachedSnapshot?.backoffUntil)) {
+    nextState.anthropicBackoffUntil = Math.max(nextState.anthropicBackoffUntil ?? 0, cachedSnapshot.backoffUntil);
+  }
+
+  if (now < nextState.anthropicBackoffUntil) {
+    diagnostics.push("Claude rate limited; using backoff window");
+    if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
+      providers.push(nextState.anthropicProvider);
+    }
+    await writeAnthropicSharedCache(paths.openCodeAuthPath, createAnthropicSharedCache(nextState, diagnostics, now), sharedDependencies);
+    return { providers, diagnostics };
+  }
+
+  if (isAnthropicCacheFresh(cachedSnapshot, refreshIntervalSeconds, now) && applyAnthropicSharedCache(cachedSnapshot, providers, diagnostics, nextState, anthropicPolicy, now)) {
+    return { providers, diagnostics };
+  }
+
+  const hasLease = await acquireAnthropicLease(paths.openCodeAuthPath, holderId, now, sharedDependencies);
+  if (!hasLease) {
+    const sharedSnapshot = await waitForAnthropicSharedCache(paths.openCodeAuthPath, now, sharedDependencies);
+    if (applyAnthropicSharedCache(sharedSnapshot, providers, diagnostics, nextState, anthropicPolicy, now)) {
+      return { providers, diagnostics };
+    }
+    return { providers, diagnostics };
+  }
+
+  try {
+    const latestCache = await readAnthropicSharedCache(paths.openCodeAuthPath, sharedDependencies);
+    if (isAnthropicCacheFresh(latestCache, refreshIntervalSeconds, now) && applyAnthropicSharedCache(latestCache, providers, diagnostics, nextState, anthropicPolicy, now)) {
+      return { providers, diagnostics };
+    }
+
+    const anthropicResult = await runAuthenticatedUsage({
+      ensureAuth: ({ forceRefresh }) => ensureAnthropicAuth(paths.openCodeAuthPath, { forceRefresh }),
+      getToken: (authResult) => authResult?.auth?.anthropic?.access ?? null,
+      getRetryToken: (authResult, previousToken) => {
+        const retryToken = authResult?.refreshed ? authResult?.auth?.anthropic?.access : null;
+        return retryToken && retryToken !== previousToken ? retryToken : null;
+      },
+      fetchUsage: fetchAnthropicUsage,
+      normalizeUsage: normalizeAnthropicUsage,
+      isAuthError: (message) => message.includes("Anthropic 401"),
+      getAuthDiagnostic: (status) => status === "expired" ? "Claude auth expired" : null,
+      getAuthFailureDiagnostic: getAnthropicAuthFailureDiagnostic,
+      getFetchFailureDiagnostic: (error) => {
+        const message = getErrorMessage(error);
+        if (message.includes("Anthropic 429")) {
+          return `Claude rate limited; backing off for ${Math.round(ANTHROPIC_RATE_LIMIT_BACKOFF_MS / 60000)}m`;
+        }
+        return `Claude fetch failed: ${message}`;
+      },
+    });
+
+    if (anthropicResult.provider) {
+      providers.push(anthropicResult.provider);
+      nextState.anthropicProvider = anthropicResult.provider;
+      nextState.anthropicBackoffUntil = 0;
+    } else if (anthropicResult.diagnostic) {
+      diagnostics.push(anthropicResult.diagnostic);
+      if (anthropicResult.diagnostic.includes("Claude rate limited; backing off")) {
+        nextState.anthropicBackoffUntil = now + ANTHROPIC_RATE_LIMIT_BACKOFF_MS;
+        if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
+          providers.push(nextState.anthropicProvider);
+        }
+      }
+    }
+
+    await writeAnthropicSharedCache(paths.openCodeAuthPath, createAnthropicSharedCache(nextState, diagnostics), sharedDependencies);
+    return { providers, diagnostics };
+  } finally {
+    await releaseAnthropicLease(paths.openCodeAuthPath, holderId, sharedDependencies);
+  }
+}
+
+async function loadOpenAIUsage(paths, now, dependencies = {}) {
+  const providers = [];
+  const diagnostics = [];
+  const holderId = `pid-${process.pid}`;
+  const refreshIntervalSeconds = Number(paths.liveRefreshIntervalSeconds) || 45;
+  const sharedDependencies = dependencies.sharedState || {};
+  const cachedSnapshot = await readOpenAISharedCache(paths.openCodeAuthPath, sharedDependencies);
+
+  if (isOpenAICacheFresh(cachedSnapshot, refreshIntervalSeconds, now) && applyOpenAISharedCache(cachedSnapshot, providers, diagnostics)) {
+    return { providers, diagnostics };
+  }
+
+  const hasLease = await acquireOpenAILease(paths.openCodeAuthPath, holderId, now, sharedDependencies);
+  if (!hasLease) {
+    const sharedSnapshot = await waitForOpenAISharedCache(paths.openCodeAuthPath, now, sharedDependencies);
+    applyOpenAISharedCache(sharedSnapshot, providers, diagnostics);
+    return { providers, diagnostics };
+  }
+
+  try {
+    const latestCache = await readOpenAISharedCache(paths.openCodeAuthPath, sharedDependencies);
+    if (isOpenAICacheFresh(latestCache, refreshIntervalSeconds, now) && applyOpenAISharedCache(latestCache, providers, diagnostics)) {
+      return { providers, diagnostics };
+    }
+
+    const openAIResult = await runAuthenticatedUsage({
+      ensureAuth: ({ forceRefresh }) => ensureOpenAIAuth(paths.openCodeAuthPath, paths.codexAuthPath, { forceRefresh }),
+      getToken: (authResult) => authResult?.token ?? null,
+      fetchUsage: fetchCodexUsage,
+      normalizeUsage: normalizeCodexUsage,
+      isAuthError: isCodexAuthError,
+      getAuthDiagnostic: (status) => getCodexAuthDiagnostic(status) ?? "Codex auth expired",
+      getAuthFailureDiagnostic: getCodexAuthFailureDiagnostic,
+      getFetchFailureDiagnostic: (error) => `Codex fetch failed: ${getErrorMessage(error)}`,
+    });
+
+    if (openAIResult.provider) {
+      providers.push(openAIResult.provider);
+    } else if (openAIResult.diagnostic) {
+      diagnostics.push(openAIResult.diagnostic);
+    }
+
+    await writeOpenAISharedCache(paths.openCodeAuthPath, createOpenAISharedCache(openAIResult.provider, diagnostics), sharedDependencies);
+    return { providers, diagnostics };
+  } finally {
+    await releaseOpenAILease(paths.openCodeAuthPath, holderId, sharedDependencies);
+  }
+}
+
+async function loadLiveUsage(paths, previousState = {}, env = process.env, dependencies = {}) {
   const providers = [];
   const diagnostics = [];
   const now = Date.now();
@@ -402,101 +747,25 @@ async function loadLiveUsage(paths, previousState = {}) {
     anthropicProvider: previousState.anthropicProvider ?? null,
   };
 
-  if (now < nextState.anthropicBackoffUntil) {
-    diagnostics.push("Claude rate limited; using backoff window");
-    if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
-      providers.push(nextState.anthropicProvider);
-    }
-  } else {
-    try {
-      const anthropicAuth = await ensureAnthropicAuth(paths.openCodeAuthPath);
-      const anthropicToken = anthropicAuth?.auth?.anthropic?.access;
-      if (anthropicToken) {
-        try {
-          const data = await fetchAnthropicUsage(anthropicToken);
-          const provider = normalizeAnthropicUsage(data);
-          providers.push(provider);
-          nextState.anthropicProvider = provider;
-        } catch (error) {
-          const message = getErrorMessage(error);
-          if (message.includes("Anthropic 401")) {
-            try {
-              const refreshed = await ensureAnthropicAuth(paths.openCodeAuthPath, { forceRefresh: true });
-              const retryToken = refreshed?.refreshed ? refreshed?.auth?.anthropic?.access : null;
-              if (retryToken && retryToken !== anthropicToken) {
-                const retryData = await fetchAnthropicUsage(retryToken);
-                const provider = normalizeAnthropicUsage(retryData);
-                providers.push(provider);
-                nextState.anthropicProvider = provider;
-              } else {
-                diagnostics.push(getAnthropicAuthDiagnostic(refreshed?.status) ?? "Claude auth expired");
-              }
-            } catch (refreshError) {
-              diagnostics.push(getAnthropicAuthFailureDiagnostic(refreshError));
-            }
-          } else if (message.includes("Anthropic 429")) {
-            nextState.anthropicBackoffUntil = now + ANTHROPIC_RATE_LIMIT_BACKOFF_MS;
-            diagnostics.push(`Claude rate limited; backing off for ${Math.round(ANTHROPIC_RATE_LIMIT_BACKOFF_MS / 60000)}m`);
-            if (anthropicPolicy?.preserveLastKnownLiveProvider && nextState.anthropicProvider) {
-              providers.push(nextState.anthropicProvider);
-            }
-          } else {
-            diagnostics.push(`Claude fetch failed: ${message}`);
-          }
-        }
-      }
-    } catch (error) {
-      diagnostics.push(getAnthropicAuthFailureDiagnostic(error));
-    }
-  }
+  const anthropic = await loadAnthropicUsage(paths, nextState, now, anthropicPolicy, dependencies);
+  providers.push(...anthropic.providers);
+  diagnostics.push(...anthropic.diagnostics);
 
-  try {
-    const openAIAuth = await ensureOpenAIAuth(paths.openCodeAuthPath, paths.codexAuthPath);
-    const token = openAIAuth?.token;
-    if (token) {
-      try {
-        const data = await fetchCodexUsage(token);
-        providers.push(normalizeCodexUsage(data));
-      } catch (error) {
-        const message = getErrorMessage(error);
-        if (isCodexAuthError(message)) {
-          try {
-            const refreshed = await ensureOpenAIAuth(paths.openCodeAuthPath, paths.codexAuthPath, { forceRefresh: true });
-            if (refreshed?.token) {
-              try {
-                const retryData = await fetchCodexUsage(refreshed.token);
-                providers.push(normalizeCodexUsage(retryData));
-              } catch (retryError) {
-                const retryMessage = getErrorMessage(retryError);
-                if (isCodexAuthError(retryMessage)) {
-                  diagnostics.push("Codex auth expired");
-                } else {
-                  diagnostics.push(`Codex fetch failed: ${retryMessage}`);
-                }
-              }
-            } else {
-              diagnostics.push(getCodexAuthDiagnostic(refreshed?.status) ?? "Codex auth expired");
-            }
-          } catch (refreshError) {
-            diagnostics.push(getCodexAuthFailureDiagnostic(refreshError));
-          }
-        } else {
-          diagnostics.push(`Codex fetch failed: ${message}`);
-        }
-      }
-    } else {
-      const diagnostic = getCodexAuthDiagnostic(openAIAuth?.status);
-      if (diagnostic) diagnostics.push(diagnostic);
-    }
-  } catch (error) {
-    diagnostics.push(getCodexAuthFailureDiagnostic(error));
+  const openAI = await loadOpenAIUsage(paths, now, dependencies);
+  providers.push(...openAI.providers);
+  diagnostics.push(...openAI.diagnostics);
+
+  const geminiCliUsage = await loadGeminiCliUsage(env, dependencies);
+  if (geminiCliUsage.provider) {
+    providers.push(geminiCliUsage.provider);
   }
 
   const openCodeAuth = (await readJson(paths.openCodeAuthPath)) ?? {};
-  const geminiDiagnostic = getGeminiAuthDiagnostic(openCodeAuth?.google);
-  if (hasValidGoogleApiKey(openCodeAuth?.google)) {
+  const openCodeConfig = (await readJson(paths.openCodeConfigPath)) ?? {};
+  const geminiDiagnostic = getGeminiAuthDiagnostic(openCodeAuth?.google, openCodeConfig, env);
+  if (!providers.some((provider) => provider.provider === "google") && hasGeminiAuth(openCodeAuth?.google, openCodeConfig, env)) {
     providers.push(normalizeGeminiUsage());
-  } else if (geminiDiagnostic) {
+  } else if (!geminiCliUsage.detected && geminiDiagnostic) {
     diagnostics.push(geminiDiagnostic);
   }
 
@@ -509,8 +778,15 @@ async function loadLiveUsage(paths, previousState = {}) {
 }
 
 module.exports = {
+  createAnthropicSharedCache,
+  createOpenAISharedCache,
+  loadGeminiCliUsage,
+  loadAnthropicUsage,
+  loadOpenAIUsage,
   normalizeGeminiUsage,
+  normalizeGeminiCliUsage,
   normalizeAnthropicUsage,
   normalizeCodexUsage,
+  parseGeminiCliQuota,
   loadLiveUsage,
 };

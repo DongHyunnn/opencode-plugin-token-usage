@@ -132,6 +132,24 @@ test("selectProviderSummaries uses the primary authoritative live window when 5h
   ]);
 });
 
+test("selectProviderSummaries uses Gemini live quota percent when a daily window is available", () => {
+  const summaries = selectProviderSummaries([
+    {
+      provider: "google",
+      windows: [{ id: "google-daily", label: "1d", percentUsed: 23, resetText: "10h" }],
+      billing: null,
+      limitReached: false,
+      estimateOnly: false,
+    },
+  ], null, {
+    providers: [{ provider: "google", totalCost: 9.5 }],
+  });
+
+  assert.deepEqual(summaries, [
+    { provider: "google", source: "live", kind: "percent", value: 23, estimated: false, resetText: "10h" },
+  ]);
+});
+
 test("selectProviderSummaries falls back to local charge when 7d is exhausted and vendor billing is unavailable", () => {
   const summaries = selectProviderSummaries(
     [
