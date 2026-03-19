@@ -4,6 +4,7 @@ const os = require("node:os");
 const DEFAULT_PATHS = {
   databasePath: path.join(os.homedir(), ".local", "share", "opencode", "opencode.db"),
   openCodeAuthPath: path.join(os.homedir(), ".local", "share", "opencode", "auth.json"),
+  openCodeConfigPath: path.join(os.homedir(), ".config", "opencode", "opencode.json"),
   codexAuthPath: path.join(os.homedir(), ".codex", "auth.json"),
 };
 
@@ -14,6 +15,7 @@ const OPENAI_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ANTHROPIC_RATE_LIMIT_BACKOFF_MS = 300_000;
+const DEFAULT_LIVE_REFRESH_INTERVAL_SECONDS = 45;
 
 const WINDOW_OPTIONS = {
   "1h": { key: "1h", label: "Last 1 hour", ms: 60 * 60 * 1000 },
@@ -41,4 +43,5 @@ module.exports = {
   ANTHROPIC_OAUTH_CLIENT_ID,
   OPENAI_OAUTH_CLIENT_ID,
   ANTHROPIC_RATE_LIMIT_BACKOFF_MS,
+  DEFAULT_LIVE_REFRESH_INTERVAL_SECONDS,
 };

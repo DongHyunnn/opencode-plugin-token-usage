@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const Module = require("node:module");
 
 const originalLoad = Module._load;
@@ -9,6 +12,7 @@ function createVscodeMock(overrides = {}) {
   const values = {
     databasePath: "/tmp/opencode.db",
     openCodeAuthPath: "/tmp/auth.json",
+    openCodeConfigPath: "/tmp/opencode.json",
     codexAuthPath: "/tmp/codex.json",
     refreshIntervalSeconds: 30,
     historyWindow: "24h",
@@ -68,6 +72,70 @@ function loadDashboardService({ configOverrides, loadHistoryImpl, loadLiveUsageI
 test.after(() => {
   Module._load = originalLoad;
   delete require.cache[dashboardServicePath];
+});
+
+test("resolveDatabasePath falls back to a channel-specific OpenCode database when the default filename is missing", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-service-db-"));
+  t.after(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const storageDir = path.join(tempDir, ".local", "share", "opencode");
+  await fs.mkdir(storageDir, { recursive: true });
+  const channelDbPath = path.join(storageDir, "opencode-dev.db");
+  await fs.writeFile(channelDbPath, "", "utf8");
+
+  const { resolveDatabasePath } = loadDashboardService({
+    loadHistoryImpl: async () => null,
+    loadLiveUsageImpl: async () => ({ providers: [], diagnostics: [], refreshedAt: 0, state: {} }),
+  });
+
+  const resolved = resolveDatabasePath(undefined, path.join(storageDir, "opencode.db"));
+  assert.equal(resolved, channelDbPath);
+});
+
+test("resolveDatabasePath preserves explicit custom paths even when a channel database exists nearby", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-service-db-"));
+  t.after(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  const storageDir = path.join(tempDir, ".local", "share", "opencode");
+  await fs.mkdir(storageDir, { recursive: true });
+  await fs.writeFile(path.join(storageDir, "opencode-beta.db"), "", "utf8");
+
+  const explicitPath = path.join(tempDir, "custom", "opencode.db");
+  const { resolveDatabasePath } = loadDashboardService({
+    loadHistoryImpl: async () => null,
+    loadLiveUsageImpl: async () => ({ providers: [], diagnostics: [], refreshedAt: 0, state: {} }),
+  });
+
+  const resolved = resolveDatabasePath(explicitPath, path.join(storageDir, "opencode.db"));
+  assert.equal(resolved, explicitPath);
+});
+
+test("resolveDatabasePath translates explicit Windows paths when running inside WSL", () => {
+  const previousDistro = process.env.WSL_DISTRO_NAME;
+  process.env.WSL_DISTRO_NAME = "Ubuntu";
+
+  try {
+    const { resolveDatabasePath } = loadDashboardService({
+      loadHistoryImpl: async () => null,
+      loadLiveUsageImpl: async () => ({ providers: [], diagnostics: [], refreshedAt: 0, state: {} }),
+    });
+
+    const resolved = resolveDatabasePath(
+      "C:\\Users\\Alice\\.local\\share\\opencode\\opencode.db",
+      "/home/alice/.local/share/opencode/opencode.db",
+    );
+    assert.equal(resolved, "/mnt/c/Users/Alice/.local/share/opencode/opencode.db");
+  } finally {
+    if (previousDistro === undefined) {
+      delete process.env.WSL_DISTRO_NAME;
+    } else {
+      process.env.WSL_DISTRO_NAME = previousDistro;
+    }
+  }
 });
 
 test("refresh always loads a dedicated rolling 5h history snapshot", async () => {
@@ -171,4 +239,53 @@ test("refresh seeds Anthropic live fallback from the previous snapshot during ba
 
   assert.equal(previousStateArg.anthropicProvider, previousAnthropicProvider);
   assert.equal(service.getSnapshot().live.providers[0], previousAnthropicProvider);
+});
+
+test("refresh translates Windows-style configured paths before loading history and auth in WSL", async () => {
+  const previousDistro = process.env.WSL_DISTRO_NAME;
+  process.env.WSL_DISTRO_NAME = "Ubuntu";
+  const historyCalls = [];
+  const liveUsageCalls = [];
+
+  try {
+    const { DashboardService } = loadDashboardService({
+      configOverrides: {
+        databasePath: "C:\\Users\\Alice\\.local\\share\\opencode\\opencode.db",
+        openCodeAuthPath: "C:\\Users\\Alice\\.local\\share\\opencode\\auth.json",
+        openCodeConfigPath: "C:\\Users\\Alice\\.config\\opencode\\opencode.json",
+        codexAuthPath: "C:\\Users\\Alice\\.codex\\auth.json",
+      },
+      loadHistoryImpl: async (databasePath, windowKey) => {
+        historyCalls.push([databasePath, windowKey]);
+        return { window: { key: windowKey }, totalTokens: 10 };
+      },
+      loadLiveUsageImpl: async (paths) => {
+        liveUsageCalls.push(paths);
+        return { providers: [], diagnostics: [], refreshedAt: 123, state: {} };
+      },
+    });
+
+    const service = new DashboardService({ subscriptions: [] });
+    await service.refresh("manual");
+
+    assert.deepEqual(historyCalls, [
+      ["/mnt/c/Users/Alice/.local/share/opencode/opencode.db", "24h"],
+      ["/mnt/c/Users/Alice/.local/share/opencode/opencode.db", "5h"],
+      ["/mnt/c/Users/Alice/.local/share/opencode/opencode.db", "30d"],
+    ]);
+    assert.deepEqual(liveUsageCalls, [
+      {
+        openCodeAuthPath: "/mnt/c/Users/Alice/.local/share/opencode/auth.json",
+        openCodeConfigPath: "/mnt/c/Users/Alice/.config/opencode/opencode.json",
+        codexAuthPath: "/mnt/c/Users/Alice/.codex/auth.json",
+        liveRefreshIntervalSeconds: 30,
+      },
+    ]);
+  } finally {
+    if (previousDistro === undefined) {
+      delete process.env.WSL_DISTRO_NAME;
+    } else {
+      process.env.WSL_DISTRO_NAME = previousDistro;
+    }
+  }
 });

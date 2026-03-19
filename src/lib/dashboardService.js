@@ -1,9 +1,13 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const vscode = require("vscode");
-const { DEFAULT_PATHS, ROLLING_FIVE_HOUR_WINDOW } = require("../constants");
+const { DEFAULT_PATHS, ROLLING_FIVE_HOUR_WINDOW, DEFAULT_LIVE_REFRESH_INTERVAL_SECONDS } = require("../constants");
+const { getAnthropicSharedPaths, getOpenAISharedPaths } = require("./anthropicSharedState");
 const { loadHistory } = require("./historyRepository");
 const { loadLiveUsage } = require("./liveUsage");
+
+const DEFAULT_DATABASE_PATH_SETTING = "~/.local/share/opencode/opencode.db";
 
 class DashboardService {
   constructor(context) {
@@ -25,11 +29,13 @@ class DashboardService {
 
   getConfiguration() {
     const config = vscode.workspace.getConfiguration("opencodeTokenUsage");
+    const configuredDatabasePath = config.get("databasePath");
     return {
-      databasePath: expandHome(config.get("databasePath") || DEFAULT_PATHS.databasePath),
-      openCodeAuthPath: expandHome(config.get("openCodeAuthPath") || DEFAULT_PATHS.openCodeAuthPath),
-      codexAuthPath: expandHome(config.get("codexAuthPath") || DEFAULT_PATHS.codexAuthPath),
-      refreshIntervalSeconds: Number(config.get("refreshIntervalSeconds") || 30),
+      databasePath: resolveDatabasePath(configuredDatabasePath, DEFAULT_PATHS.databasePath),
+      openCodeAuthPath: resolveHostPath(config.get("openCodeAuthPath") || DEFAULT_PATHS.openCodeAuthPath),
+      openCodeConfigPath: resolveHostPath(config.get("openCodeConfigPath") || DEFAULT_PATHS.openCodeConfigPath),
+      codexAuthPath: resolveHostPath(config.get("codexAuthPath") || DEFAULT_PATHS.codexAuthPath),
+      refreshIntervalSeconds: Number(config.get("refreshIntervalSeconds") || DEFAULT_LIVE_REFRESH_INTERVAL_SECONDS),
       historyWindow: config.get("historyWindow") || "24h",
       showEstimated7h: Boolean(config.get("showEstimated7h")),
     };
@@ -69,7 +75,9 @@ class DashboardService {
       void this.refresh("file-change");
     }, 800);
 
-    for (const filePath of [config.databasePath, `${config.databasePath}-wal`, config.openCodeAuthPath, config.codexAuthPath]) {
+    const anthropicSharedPaths = getAnthropicSharedPaths(config.openCodeAuthPath);
+    const openAISharedPaths = getOpenAISharedPaths(config.openCodeAuthPath);
+    for (const filePath of [config.databasePath, `${config.databasePath}-wal`, config.openCodeAuthPath, config.openCodeConfigPath, config.codexAuthPath, anthropicSharedPaths.cachePath, openAISharedPaths.cachePath]) {
       const watcher = createFsWatcher(filePath, onExternalChange);
       if (watcher) this.disposables.push(watcher);
     }
@@ -127,7 +135,9 @@ class DashboardService {
       live = await loadLiveUsage(
         {
           openCodeAuthPath: config.openCodeAuthPath,
+          openCodeConfigPath: config.openCodeConfigPath,
           codexAuthPath: config.codexAuthPath,
+          liveRefreshIntervalSeconds: config.refreshIntervalSeconds,
         },
         {
           ...this.liveState,
@@ -183,7 +193,90 @@ function debounce(callback, waitMs) {
 
 function expandHome(value) {
   if (!value || !value.startsWith("~/")) return value;
-  return path.join(require("node:os").homedir(), value.slice(2));
+  return path.join(os.homedir(), value.slice(2));
+}
+
+function resolveHostPath(value) {
+  const expandedValue = expandHome(value);
+  if (!expandedValue) return expandedValue;
+
+  return translateWindowsPathForWsl(expandedValue);
+}
+
+function translateWindowsPathForWsl(value) {
+  if (!isWslRuntime() || !isWindowsAbsolutePath(value)) {
+    return value;
+  }
+
+  const normalizedValue = value.replace(/\//g, "\\");
+  const driveLetter = normalizedValue[0].toLowerCase();
+  const relativePath = normalizedValue
+    .slice(2)
+    .replace(/\\+/g, "/")
+    .replace(/^\/+/, "");
+
+  return path.posix.join("/mnt", driveLetter, relativePath);
+}
+
+function isWindowsAbsolutePath(value) {
+  return /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function isWslRuntime() {
+  if (process.platform !== "linux") {
+    return false;
+  }
+
+  return Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || /microsoft/i.test(os.release()));
+}
+
+function resolveDatabasePath(configuredPath, fallbackPath) {
+  const resolvedPath = resolveHostPath(configuredPath || fallbackPath);
+  const resolvedFallbackPath = resolveHostPath(fallbackPath);
+  if (!shouldProbeDefaultDatabasePath(configuredPath, resolvedPath, resolvedFallbackPath)) {
+    return resolvedPath;
+  }
+
+  return findPreferredDatabasePath(resolvedPath);
+}
+
+function shouldProbeDefaultDatabasePath(configuredPath, resolvedPath, fallbackPath) {
+  if (!resolvedPath || path.basename(resolvedPath) !== "opencode.db") {
+    return false;
+  }
+
+  return !configuredPath || configuredPath === DEFAULT_DATABASE_PATH_SETTING || resolvedPath === fallbackPath;
+}
+
+function findPreferredDatabasePath(resolvedPath) {
+  if (fs.existsSync(resolvedPath)) {
+    return resolvedPath;
+  }
+
+  const directory = path.dirname(resolvedPath);
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return resolvedPath;
+  }
+
+  const candidates = entries
+    .filter((entry) => entry.isFile() && /^opencode(?:-[A-Za-z0-9._-]+)?\.db$/.test(entry.name))
+    .map((entry) => {
+      const candidatePath = path.join(directory, entry.name);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(candidatePath).mtimeMs;
+      } catch {}
+      return { candidatePath, mtimeMs, exact: entry.name === "opencode.db" };
+    })
+    .sort((left, right) => {
+      if (left.exact !== right.exact) return left.exact ? -1 : 1;
+      return right.mtimeMs - left.mtimeMs;
+    });
+
+  return candidates[0]?.candidatePath || resolvedPath;
 }
 
 function toMessage(error) {
@@ -194,4 +287,5 @@ function toMessage(error) {
 module.exports = {
   DashboardService,
   expandHome,
+  resolveDatabasePath,
 };

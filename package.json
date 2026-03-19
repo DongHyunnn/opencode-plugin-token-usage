@@ -22,7 +22,7 @@
   ],
   "main": "./src/extension.js",
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -31,26 +31,26 @@
     "commands": [
       {
         "command": "opencodeTokenUsage.openDashboard",
-        "title": "OTU: OpenCode Token Usage: Open Dashboard"
+        "title": "Open Dashboard"
       },
       {
         "command": "opencodeTokenUsage.refresh",
-        "title": "OTU: OpenCode Token Usage: Refresh"
+        "title": "Refresh"
       },
       {
         "command": "opencodeTokenUsage.selectWindow",
-        "title": "OTU: OpenCode Token Usage: Select History Window"
+        "title": "Select History Window"
       },
       {
         "command": "opencodeTokenUsage.installTrackingPlugin",
-        "title": "OTU: OpenCode Token Usage: Install Tracking Plugin"
+        "title": "Install Tracking Plugin"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
           "id": "opencodeTokenUsage",
-          "title": "OTU: OpenCode Token Usage",
+          "title": "OTU",
           "icon": "media/activity.svg"
         }
       ]
@@ -97,6 +97,12 @@
           "scope": "machine",
           "description": "Path to the local OpenCode auth file used for Anthropic/OpenAI OAuth refresh."
         },
+        "opencodeTokenUsage.openCodeConfigPath": {
+          "type": "string",
+          "default": "~/.config/opencode/opencode.json",
+          "scope": "machine",
+          "description": "Path to the local OpenCode config file used to detect Gemini auth-plugin configuration."
+        },
         "opencodeTokenUsage.codexAuthPath": {
           "type": "string",
           "default": "~/.codex/auth.json",
@@ -105,7 +111,7 @@
         },
         "opencodeTokenUsage.refreshIntervalSeconds": {
           "type": "number",
-          "default": 30,
+          "default": 45,
           "minimum": 10,
           "maximum": 300,
           "description": "Fallback polling interval for refreshing history and live provider data."
