@@ -43,13 +43,13 @@ npm run package:vsix
 Install the generated VSIX in VS Code:
 
 ```bash
-code --install-extension ./opencode-token-usage-extension-2.0.1.vsix
+code --install-extension ./opencode-token-usage-extension-*.vsix
 ```
 
 If the `cursor` shell command is available on your machine, you can use the same VSIX from Cursor:
 
 ```bash
-cursor --install-extension ./opencode-token-usage-extension-2.0.1.vsix
+cursor --install-extension ./opencode-token-usage-extension-*.vsix
 ```
 
 Convenience scripts are included:
@@ -108,6 +108,7 @@ The release workflow also supports Open VSX publishing when the repository secre
 
 - `opencodeTokenUsage.databasePath`
 - `opencodeTokenUsage.openCodeAuthPath`
+- `opencodeTokenUsage.openCodeConfigPath`
 - `opencodeTokenUsage.codexAuthPath`
 - `opencodeTokenUsage.refreshIntervalSeconds`
 - `opencodeTokenUsage.historyWindow`
@@ -117,12 +118,18 @@ These paths are machine-scoped because they point to local editor/runtime state.
 
 ## How auth is checked
 
-- **Claude (Anthropic)**: Uses `openCodeAuthPath` to read `~/.local/share/opencode/auth.json`, reuses a valid `anthropic` access token until expiry, then refreshes with the stored refresh token.
-- **Codex/OpenAI**: Reads both `openCodeAuthPath` and `codexAuthPath`; uses valid OpenCode access first; otherwise tries refresh tokens from either path; otherwise falls back to raw Codex access token only when no refresh path exists.
-- **Gemini**: Reuses the existing `google.key` entry from `openCodeAuthPath` and is estimate-only (no live quota endpoint).
+- **Claude (Anthropic)**: Uses `openCodeAuthPath` (`~/.local/share/opencode/auth.json`), reuses a valid access token until expiry, then refreshes with the stored refresh token. Multiple running extension instances share a single file-backed cache so only one instance hits the API per refresh cycle.
+- **Codex/OpenAI**: Reads both `openCodeAuthPath` and `codexAuthPath`; uses valid OpenCode access first; otherwise tries refresh tokens from either path; otherwise falls back to raw Codex access token only when no refresh path exists. Also uses a shared file-backed cache to deduplicate API calls.
+- **Gemini**: Three-tier fallback in order:
+1. **OAuth quota** (live rate-limit windows): if `openCodeAuthPath` contains a `google.type = "oauth"` entry from the [`opencode-gemini-auth`](https://github.com/jenslys/opencode-gemini-auth) plugin, the extension calls `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` directly using that token. If the access token is already valid, quota fetch works directly; if the token is expired, automatic refresh now requires local `OTU_GEMINI_OAUTH_CLIENT_ID` and `OTU_GEMINI_OAUTH_CLIENT_SECRET` environment variables before the extension will refresh it.
+  2. **Gemini CLI** (live pooled quota): if the `gemini` CLI binary is on `PATH` and authenticated, the extension runs `gemini -o json -y /stats model` to read pooled remaining quota.
+  3. **API key / estimateOnly**: if `google.key` is set in `openCodeAuthPath` or `GOOGLE_API_KEY` / `GEMINI_API_KEY` env vars are present, the provider appears in the status bar without live quota data. The extension also detects the `opencode-gemini-auth` plugin via `openCodeConfigPath` (`~/.config/opencode/opencode.json`) and shows estimateOnly in that case.
 - **Status bar fallback chain**: `live percent` → `vendor billing` → `estimated local 5h charge`.
-- **Gemini quota visibility**: Official quota and spend remain visible in [AI Studio](https://aistudio.google.com) because the Gemini Developer API does not expose a lightweight authoritative remaining-quota endpoint.
-- **Diagnostics**: Auth failures are categorized as `not configured`, `expired`, `refresh failed`, or `fetch failed` to help troubleshooting.
+- **Diagnostics**: Auth failures are categorized as `not configured`, `expired`, `refresh failed`, or `fetch failed` to help troubleshooting. Gemini project resolution failures report the specific API error from `loadCodeAssist`.
+
+## WSL support
+
+On Windows Subsystem for Linux, the extension automatically translates Windows-style paths (e.g. `C:\Users\...`) to their WSL mount equivalents (`/mnt/c/Users/...`). The `npm run dev` launcher also detects WSL and opens the Extension Development Host via a Remote WSL window if the `ms-vscode-remote.remote-wsl` extension is installed.
 
 ## Development
 

@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const path = require("node:path");
 
 const { buildEditorArgs, findEditorCommand, getCommandHelp, getCommandId, getWslVsCodeFallback, hasWslRemoteResolver, isWslRemoteLaunch, resolveEditorCommand, run, supportsExtensionDevelopmentPath } = require("../scripts/dev");
 
@@ -22,7 +23,10 @@ test("getCommandId normalizes a bare command and path", () => {
   assert.equal(getCommandId("/mnt/c/Users/test/AppData/Local/Programs/Microsoft VS Code/bin/code"), "code");
 });
 
-test("findEditorCommand picks the first CLI that supports extension development", () => {
+test("findEditorCommand picks the first CLI that supports extension development", (t) => {
+  t.mock.method(fs, "readdirSync", () => [{ isDirectory: () => true, name: "tester" }]);
+  t.mock.method(fs, "existsSync", (filePath) => filePath === "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code");
+
   const calls = [];
   const spawn = (command) => {
     calls.push(command);
@@ -33,9 +37,9 @@ test("findEditorCommand picks the first CLI that supports extension development"
     return { stdout: "Visual Studio Code", stderr: "" };
   };
 
-  const editor = findEditorCommand(spawn);
-  assert.equal(editor, "/mnt/c/Users/최동현/AppData/Local/Programs/Microsoft VS Code/bin/code");
-  assert.deepEqual(calls, ["cursor", "/mnt/c/Users/최동현/AppData/Local/Programs/Microsoft VS Code/bin/code"]);
+  const editor = findEditorCommand(spawn, { WSL_DISTRO_NAME: "Ubuntu" });
+  assert.equal(editor, "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code");
+  assert.deepEqual(calls, ["cursor", "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code"]);
 });
 
 test("getWslVsCodeFallback finds the standard VS Code install path in WSL", (t) => {
@@ -89,8 +93,9 @@ test("findEditorCommand falls back to the standard WSL VS Code path", (t) => {
 });
 
 test("buildEditorArgs keeps the legacy dev-host launch outside WSL", () => {
+  const workspacePath = path.resolve(__dirname, "..");
   const args = buildEditorArgs("code", {});
-  assert.deepEqual(args, ["--extensionDevelopmentPath=/home/donghyeon/opencode-plugin-token-usage"]);
+  assert.deepEqual(args, [`--extensionDevelopmentPath=${workspacePath}`]);
 });
 
 test("isWslRemoteLaunch only applies to VS Code commands under WSL", () => {
@@ -112,15 +117,20 @@ test("hasWslRemoteResolver fails clearly when extension listing fails", () => {
 });
 
 test("buildEditorArgs launches VS Code in a WSL remote window when needed", () => {
+  const workspacePath = path.resolve(__dirname, "..");
   const args = buildEditorArgs("code", { WSL_DISTRO_NAME: "Ubuntu" });
   assert.deepEqual(args, [
     "--new-window",
-    "/home/donghyeon/opencode-plugin-token-usage",
-    "--extensionDevelopmentPath=/home/donghyeon/opencode-plugin-token-usage",
+    workspacePath,
+    `--extensionDevelopmentPath=${workspacePath}`,
   ]);
 });
 
-test("run prints the resolved dry-run command for the WSL VS Code fallback", () => {
+test("run prints the resolved dry-run command for the WSL VS Code fallback", (t) => {
+  t.mock.method(fs, "readdirSync", () => [{ isDirectory: () => true, name: "tester" }]);
+  t.mock.method(fs, "existsSync", (filePath) => filePath === "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code");
+
+  const workspacePath = path.resolve(__dirname, "..");
   const output = [];
   const originalLog = console.log;
   console.log = (value) => output.push(value);
@@ -140,7 +150,7 @@ test("run prints the resolved dry-run command for the WSL VS Code fallback", () 
 
     assert.equal(exitCode, 0);
     assert.equal(output.length, 1);
-    assert.equal(output[0], "/mnt/c/Users/최동현/AppData/Local/Programs/Microsoft VS Code/bin/code --new-window /home/donghyeon/opencode-plugin-token-usage --extensionDevelopmentPath=/home/donghyeon/opencode-plugin-token-usage");
+    assert.equal(output[0], `/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code --new-window ${workspacePath} --extensionDevelopmentPath=${workspacePath}`);
   } finally {
     console.log = originalLog;
   }
@@ -167,15 +177,20 @@ test("run prints the resolved dry-run command with the WSL VS Code path fallback
       throw new Error(`Unexpected spawn: ${command} ${args.join(" ")}`);
     }, { WSL_DISTRO_NAME: "Ubuntu" });
 
+    const workspacePath = path.resolve(__dirname, "..");
     assert.equal(exitCode, 0);
     assert.equal(output.length, 1);
-    assert.equal(output[0], "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code --new-window /home/donghyeon/opencode-plugin-token-usage --extensionDevelopmentPath=/home/donghyeon/opencode-plugin-token-usage");
+    assert.equal(output[0], `/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code --new-window ${workspacePath} --extensionDevelopmentPath=${workspacePath}`);
   } finally {
     console.log = originalLog;
   }
 });
 
-test("run launches directly from WSL without adding a duplicate remote option", () => {
+test("run launches directly from WSL without adding a duplicate remote option", (t) => {
+  t.mock.method(fs, "readdirSync", () => [{ isDirectory: () => true, name: "tester" }]);
+  t.mock.method(fs, "existsSync", (filePath) => filePath === "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code");
+
+  const workspacePath = path.resolve(__dirname, "..");
   const spawns = [];
 
   const exitCode = run([], (command, args) => {
@@ -194,13 +209,13 @@ test("run launches directly from WSL without adding a duplicate remote option", 
   assert.equal(exitCode, 0);
   assert.deepEqual(spawns, [
     ["cursor", ["--help"]],
-    ["/mnt/c/Users/최동현/AppData/Local/Programs/Microsoft VS Code/bin/code", ["--help"]],
+    ["/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code", ["--help"]],
     [
-      "/mnt/c/Users/최동현/AppData/Local/Programs/Microsoft VS Code/bin/code",
+      "/mnt/c/Users/tester/AppData/Local/Programs/Microsoft VS Code/bin/code",
       [
         "--new-window",
-        "/home/donghyeon/opencode-plugin-token-usage",
-        "--extensionDevelopmentPath=/home/donghyeon/opencode-plugin-token-usage",
+        workspacePath,
+        `--extensionDevelopmentPath=${workspacePath}`,
       ],
     ],
   ]);

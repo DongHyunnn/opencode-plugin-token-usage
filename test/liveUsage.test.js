@@ -10,11 +10,16 @@ const {
   OPENAI_OAUTH_TOKEN_URL,
 } = require("../src/constants");
 const {
+  GOOGLE_OAUTH_TOKEN_URL,
+  GEMINI_CODE_ASSIST_ENDPOINT,
+} = require("../src/constants");
+const {
   loadLiveUsage,
   loadGeminiCliUsage,
   normalizeAnthropicUsage,
   normalizeCodexUsage,
   normalizeGeminiCliUsage,
+  normalizeGeminiOAuthUsage,
   normalizeGeminiUsage,
   parseGeminiCliQuota,
 } = require("../src/lib/liveUsage");
@@ -594,16 +599,18 @@ test("loadLiveUsage recognizes Gemini from OpenCode google OAuth without an API 
       type: "oauth",
       access: "google-access-token",
       refresh: "google-refresh-token",
-      expires: Date.now() + 60_000,
+      expires: Date.now() + 3_600_000,
     },
   });
-  const calls = installFetchMock([]);
+  const calls = installFetchMock([
+    () => createJsonResponse({}),
+  ]);
 
   const result = await loadLiveUsage(paths);
 
-  assert.equal(calls.length, 0);
+  assert.equal(calls.length, 1);
   assert.deepEqual(result.providers, [normalizeGeminiUsage()]);
-  assert.deepEqual(result.diagnostics, ["Codex not configured"]);
+  assert.ok(result.diagnostics.some((d) => d.startsWith("Gemini project not resolved:")));
 });
 
 test("loadLiveUsage recognizes Gemini from OpenCode config when auth plugin and project id are present", async () => {
@@ -767,4 +774,199 @@ test("loadLiveUsage reports Codex fetch failures distinctly", async () => {
     "Codex fetch failed: Codex 500: upstream down",
     "Gemini API key missing or invalid",
   ]);
+});
+
+const GEMINI_QUOTA_URL = `${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuota`;
+const GEMINI_LOAD_CODE_ASSIST_URL = `${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`;
+
+test("normalizeGeminiOAuthUsage converts quota buckets to windows sorted by usage descending", () => {
+  const now = Date.now();
+  const resetTime = new Date(now + 3_600_000).toISOString();
+  const normalized = normalizeGeminiOAuthUsage({
+    buckets: [
+      { modelId: "gemini-2.5-flash", remainingFraction: 0.8, resetTime, tokenType: "REQUESTS" },
+      { modelId: "gemini-2.5-pro", remainingFraction: 0.3, resetTime, tokenType: "REQUESTS" },
+    ],
+  });
+
+  assert.equal(normalized.provider, "google");
+  assert.equal(normalized.estimateOnly, false);
+  assert.equal(normalized.windows.length, 2);
+  assert.equal(normalized.windows[0].id, "google-gemini-2.5-pro");
+  assert.equal(normalized.windows[0].label, "2.5 Pro");
+  assert.equal(normalized.windows[0].percentUsed, 70);
+  assert.equal(normalized.windows[1].id, "google-gemini-2.5-flash");
+  assert.equal(normalized.windows[1].percentUsed, 20);
+  assert.equal(normalized.limitReached, false);
+});
+
+test("normalizeGeminiOAuthUsage marks limitReached when any bucket is fully exhausted", () => {
+  const resetTime = new Date(Date.now() + 3_600_000).toISOString();
+  const normalized = normalizeGeminiOAuthUsage({
+    buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0, resetTime, tokenType: "REQUESTS" }],
+  });
+
+  assert.equal(normalized.limitReached, true);
+  assert.equal(normalized.windows[0].percentUsed, 100);
+});
+
+test("loadLiveUsage fetches live Gemini quota when OAuth auth is configured with a project ID", async () => {
+  const resetTime = new Date(Date.now() + 3_600_000).toISOString();
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token|my-project-id|",
+      access: "google-access-token",
+      expires: Date.now() + 3_600_000,
+    },
+  });
+  const calls = installFetchMock([
+    (url, options) => {
+      assert.equal(url, GEMINI_QUOTA_URL);
+      assert.equal(options.headers.Authorization, "Bearer google-access-token");
+      assert.match(options.body, /"project":"my-project-id"/);
+      return createJsonResponse({
+        buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.6, resetTime, tokenType: "REQUESTS" }],
+      });
+    },
+  ]);
+
+  const result = await loadLiveUsage(paths);
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.providers.length, 1);
+  assert.equal(result.providers[0].provider, "google");
+  assert.equal(result.providers[0].estimateOnly, false);
+  assert.equal(result.providers[0].windows[0].percentUsed, 40);
+  assert.deepEqual(result.diagnostics, ["Codex not configured"]);
+});
+
+test("loadLiveUsage refreshes expired Gemini access token before fetching quota", async () => {
+  const resetTime = new Date(Date.now() + 3_600_000).toISOString();
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token|my-project-id|",
+      access: "expired-access-token",
+      expires: Date.now() - 60_000,
+    },
+  });
+  const calls = installFetchMock([
+    (url, options) => {
+      assert.equal(url, GOOGLE_OAUTH_TOKEN_URL);
+      assert.match(options.body, /refresh_token=google-refresh-token/);
+      assert.match(options.body, /client_id=local-gemini-client-id/);
+      assert.match(options.body, /client_secret=local-gemini-client-secret/);
+      return createJsonResponse({ access_token: "fresh-google-access", expires_in: 3600 });
+    },
+    (url, options) => {
+      assert.equal(url, GEMINI_QUOTA_URL);
+      assert.equal(options.headers.Authorization, "Bearer fresh-google-access");
+      return createJsonResponse({
+        buckets: [{ modelId: "gemini-2.5-flash", remainingFraction: 0.9, resetTime, tokenType: "REQUESTS" }],
+      });
+    },
+  ]);
+
+  const result = await loadLiveUsage(paths, {}, {
+    OTU_GEMINI_OAUTH_CLIENT_ID: "local-gemini-client-id",
+    OTU_GEMINI_OAUTH_CLIENT_SECRET: "local-gemini-client-secret",
+  });
+  const updatedAuth = await readJson(paths.openCodeAuthPath);
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.providers[0].estimateOnly, false);
+  assert.equal(result.providers[0].windows[0].percentUsed, 10);
+  assert.equal(updatedAuth.google.access, "fresh-google-access");
+});
+
+test("loadLiveUsage falls back cleanly when Gemini OAuth refresh has no local client credentials", async () => {
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token|my-project-id|",
+      access: "expired-access-token",
+      expires: Date.now() - 60_000,
+    },
+  });
+  const calls = installFetchMock([]);
+
+  const result = await loadLiveUsage(paths);
+
+  assert.equal(calls.length, 0);
+  assert.equal(result.providers[0].provider, "google");
+  assert.equal(result.providers[0].estimateOnly, true);
+  assert.ok(result.diagnostics.includes("Gemini quota fetch failed: Gemini refresh requires local OTU_GEMINI_OAUTH_CLIENT_ID and OTU_GEMINI_OAUTH_CLIENT_SECRET"));
+});
+
+test("loadLiveUsage resolves project via loadCodeAssist when no project ID is in the refresh token", async () => {
+  const resetTime = new Date(Date.now() + 3_600_000).toISOString();
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token",
+      access: "google-access-token",
+      expires: Date.now() + 3_600_000,
+    },
+  });
+  const calls = installFetchMock([
+    (url) => {
+      assert.equal(url, GEMINI_LOAD_CODE_ASSIST_URL);
+      return createJsonResponse({ cloudaicompanionProject: "resolved-project-id" });
+    },
+    (url, options) => {
+      assert.equal(url, GEMINI_QUOTA_URL);
+      assert.match(options.body, /"project":"resolved-project-id"/);
+      return createJsonResponse({
+        buckets: [{ modelId: "gemini-2.5-pro", remainingFraction: 0.5, resetTime, tokenType: "REQUESTS" }],
+      });
+    },
+  ]);
+
+  const result = await loadLiveUsage(paths);
+  const updatedAuth = await readJson(paths.openCodeAuthPath);
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.providers[0].estimateOnly, false);
+  assert.equal(result.providers[0].windows[0].percentUsed, 50);
+  assert.ok(updatedAuth.google.refresh.includes("resolved-project-id"));
+  assert.deepEqual(result.diagnostics, ["Codex not configured"]);
+});
+
+test("loadLiveUsage falls back to estimateOnly when loadCodeAssist returns no project", async () => {
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token",
+      access: "google-access-token",
+      expires: Date.now() + 3_600_000,
+    },
+  });
+  const calls = installFetchMock([
+    () => createJsonResponse({}),
+  ]);
+
+  const result = await loadLiveUsage(paths);
+
+  assert.equal(calls.length, 1);
+  assert.ok(result.diagnostics.some((d) => d.startsWith("Gemini project not resolved:")));
+});
+
+test("loadLiveUsage falls back to estimateOnly when Gemini quota response has no buckets", async () => {
+  const paths = await createAuthPaths({
+    google: {
+      type: "oauth",
+      refresh: "google-refresh-token|my-project-id|",
+      access: "google-access-token",
+      expires: Date.now() + 3_600_000,
+    },
+  });
+  installFetchMock([
+    () => createJsonResponse({ buckets: [] }),
+  ]);
+
+  const result = await loadLiveUsage(paths);
+
+  assert.equal(result.providers[0].estimateOnly, true);
+  assert.deepEqual(result.diagnostics, ["Codex not configured"]);
 });

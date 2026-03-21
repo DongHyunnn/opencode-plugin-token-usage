@@ -5,6 +5,8 @@ const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
 
+const testIfLinux = process.platform === "linux" ? test : test.skip;
+
 const originalLoad = Module._load;
 const dashboardServicePath = require.resolve("../src/lib/dashboardService");
 
@@ -114,7 +116,7 @@ test("resolveDatabasePath preserves explicit custom paths even when a channel da
   assert.equal(resolved, explicitPath);
 });
 
-test("resolveDatabasePath translates explicit Windows paths when running inside WSL", () => {
+testIfLinux("resolveDatabasePath translates explicit Windows paths when running inside WSL", () => {
   const previousDistro = process.env.WSL_DISTRO_NAME;
   process.env.WSL_DISTRO_NAME = "Ubuntu";
 
@@ -241,7 +243,7 @@ test("refresh seeds Anthropic live fallback from the previous snapshot during ba
   assert.equal(service.getSnapshot().live.providers[0], previousAnthropicProvider);
 });
 
-test("refresh translates Windows-style configured paths before loading history and auth in WSL", async () => {
+testIfLinux("refresh translates Windows-style configured paths before loading history and auth in WSL", async () => {
   const previousDistro = process.env.WSL_DISTRO_NAME;
   process.env.WSL_DISTRO_NAME = "Ubuntu";
   const historyCalls = [];

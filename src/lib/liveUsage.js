@@ -6,6 +6,10 @@ const {
   ANTHROPIC_OAUTH_CLIENT_ID,
   OPENAI_OAUTH_CLIENT_ID,
   ANTHROPIC_RATE_LIMIT_BACKOFF_MS,
+  ANTHROPIC_MIN_POLL_INTERVAL_MS,
+  GEMINI_MIN_POLL_INTERVAL_MS,
+  GEMINI_CODE_ASSIST_ENDPOINT,
+  GOOGLE_OAUTH_TOKEN_URL,
 } = require("../constants");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
@@ -123,8 +127,49 @@ function normalizeGoogleApiKey(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+
+function isGeminiOAuthAuth(googleAuth) {
+  return googleAuth?.type === "oauth" && Boolean(googleAuth?.refresh);
+}
+
+function parseGeminiRefreshParts(refresh) {
+  const [refreshToken = "", projectId = "", managedProjectId = ""] = (refresh ?? "").split("|");
+  return {
+    refreshToken,
+    projectId: projectId || undefined,
+    managedProjectId: managedProjectId || undefined,
+  };
+}
+
+function formatGeminiRefreshParts(refreshToken, projectId, managedProjectId) {
+  if (!refreshToken) return "";
+  if (!projectId && !managedProjectId) return refreshToken;
+  return `${refreshToken}|${projectId ?? ""}|${managedProjectId ?? ""}`;
+}
+
+function resolveGeminiProjectId(googleAuth) {
+  const parts = parseGeminiRefreshParts(googleAuth?.refresh);
+  return parts.projectId || parts.managedProjectId || null;
+}
+
+function isGeminiAccessTokenExpired(googleAuth) {
+  const EXPIRY_BUFFER_MS = 60_000;
+  if (!googleAuth?.access) return true;
+  if (typeof googleAuth.expires !== "number") return true;
+  return googleAuth.expires <= Date.now() + EXPIRY_BUFFER_MS;
+}
+
 function resolveGoogleApiKey(googleAuth, env = process.env) {
   return normalizeGoogleApiKey(googleAuth?.key) || normalizeGoogleApiKey(env?.GOOGLE_API_KEY) || normalizeGoogleApiKey(env?.GEMINI_API_KEY);
+}
+
+function resolveGeminiOAuthClientCredentials(env = process.env) {
+  const clientId = normalizeGoogleApiKey(env?.OTU_GEMINI_OAUTH_CLIENT_ID);
+  const clientSecret = normalizeGoogleApiKey(env?.OTU_GEMINI_OAUTH_CLIENT_SECRET);
+  return {
+    clientId,
+    clientSecret,
+  };
 }
 
 function hasValidGoogleOAuth(googleAuth) {
@@ -276,6 +321,138 @@ function isGeminiCliUnavailableError(error) {
   if (!error) return false;
   const message = getErrorMessage(error);
   return error.code === "ETIMEDOUT" || message.includes("Please login") || message.includes("not authenticated") || message.includes("not logged in");
+}
+
+function formatGeminiModelLabel(modelId) {
+  if (!modelId) return "unknown";
+  const match = modelId.match(/^gemini-([0-9]+(?:\.[0-9]+)*)-([a-z]+)/i);
+  if (match) return `${match[1]} ${match[2].charAt(0).toUpperCase()}${match[2].slice(1).toLowerCase()}`;
+  return modelId;
+}
+
+function normalizeGeminiOAuthUsage(quota) {
+  const buckets = Array.isArray(quota?.buckets) ? quota.buckets : [];
+  const windows = buckets
+    .filter((bucket) => typeof bucket.remainingFraction === "number")
+    .map((bucket) => ({
+      id: `google-${bucket.modelId ?? "unknown"}`,
+      label: formatGeminiModelLabel(bucket.modelId),
+      percentUsed: safeRawPct((1 - bucket.remainingFraction) * 100),
+      resetText: formatReset(bucket.resetTime),
+      remainingAmount: bucket.remainingAmount,
+      tokenType: bucket.tokenType,
+    }))
+    .sort((a, b) => b.percentUsed - a.percentUsed);
+
+  return {
+    provider: "google",
+    label: "Gemini",
+    windows,
+    billing: null,
+    limitReached: windows.length > 0 && windows[0].percentUsed >= 100 ? true : false,
+    estimateOnly: false,
+  };
+}
+
+async function refreshGeminiAccessToken(authPath, auth, googleAuth, env = process.env) {
+  const parts = parseGeminiRefreshParts(googleAuth.refresh);
+  if (!parts.refreshToken) throw new Error("Gemini refresh token missing");
+
+  const { clientId, clientSecret } = resolveGeminiOAuthClientCredentials(env);
+  if (!clientId || !clientSecret) {
+    throw new Error("Gemini refresh requires local OTU_GEMINI_OAUTH_CLIENT_ID and OTU_GEMINI_OAUTH_CLIENT_SECRET");
+  }
+
+  const response = await fetch(GOOGLE_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: parts.refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Gemini token refresh ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  const expiresIn = Number(json.expires_in);
+  const newRefreshToken = json.refresh_token ?? parts.refreshToken;
+  const newRefresh = formatGeminiRefreshParts(newRefreshToken, parts.projectId, parts.managedProjectId);
+
+  const updatedGoogle = {
+    ...googleAuth,
+    access: json.access_token,
+    expires: Number.isFinite(expiresIn) && expiresIn > 0 ? Date.now() + expiresIn * 1000 : googleAuth.expires,
+    refresh: newRefresh,
+  };
+
+  const updatedAuth = { ...auth, google: updatedGoogle };
+  await writeJson(authPath, updatedAuth);
+  return { accessToken: json.access_token, updatedAuth };
+}
+
+async function ensureGeminiAccessToken(authPath, auth, googleAuth, env = process.env) {
+  if (!isGeminiAccessTokenExpired(googleAuth)) {
+    return { accessToken: googleAuth.access };
+  }
+  return refreshGeminiAccessToken(authPath, auth, googleAuth, env);
+}
+
+async function fetchGeminiManagedProjectId(accessToken) {
+  const response = await fetch(`${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:loadCodeAssist`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      "X-Goog-Api-Client": "gl-node/22.17.0",
+      "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+    },
+    body: JSON.stringify({
+      metadata: {
+        ideType: "IDE_UNSPECIFIED",
+        platform: "PLATFORM_UNSPECIFIED",
+        pluginType: "GEMINI",
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    return { projectId: null, reason: `loadCodeAssist ${response.status}: ${body.slice(0, 120)}` };
+  }
+
+  const json = await response.json();
+  const project = json?.cloudaicompanionProject;
+  if (!project) {
+    return { projectId: null, reason: "loadCodeAssist returned no cloudaicompanionProject" };
+  }
+  const id = typeof project === "string" ? project : (project?.id ?? null);
+  return { projectId: id, reason: id ? null : "cloudaicompanionProject has no id field" };
+}
+
+async function fetchGeminiQuota(accessToken, projectId) {
+  const response = await fetch(`${GEMINI_CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuota`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      "X-Goog-Api-Client": "gl-node/22.17.0",
+      "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+    },
+    body: JSON.stringify({ project: projectId }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Gemini quota ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  return response.json();
 }
 
 function normalizeAnthropicUsage(data) {
@@ -607,7 +784,10 @@ async function loadAnthropicUsage(paths, nextState, now, anthropicPolicy, depend
   const providers = [];
   const diagnostics = [];
   const holderId = `pid-${process.pid}`;
-  const refreshIntervalSeconds = Number(paths.liveRefreshIntervalSeconds) || 45;
+  const refreshIntervalSeconds = Math.max(
+    Number(paths.liveRefreshIntervalSeconds) || (ANTHROPIC_MIN_POLL_INTERVAL_MS / 1000),
+    ANTHROPIC_MIN_POLL_INTERVAL_MS / 1000,
+  );
   const sharedDependencies = dependencies.sharedState || {};
   const cachedSnapshot = await readAnthropicSharedCache(paths.openCodeAuthPath, sharedDependencies);
 
@@ -745,6 +925,8 @@ async function loadLiveUsage(paths, previousState = {}, env = process.env, depen
   const nextState = {
     anthropicBackoffUntil: previousState.anthropicBackoffUntil ?? 0,
     anthropicProvider: previousState.anthropicProvider ?? null,
+    geminiLastFetchAt: previousState.geminiLastFetchAt ?? 0,
+    geminiProvider: previousState.geminiProvider ?? null,
   };
 
   const anthropic = await loadAnthropicUsage(paths, nextState, now, anthropicPolicy, dependencies);
@@ -755,18 +937,73 @@ async function loadLiveUsage(paths, previousState = {}, env = process.env, depen
   providers.push(...openAI.providers);
   diagnostics.push(...openAI.diagnostics);
 
-  const geminiCliUsage = await loadGeminiCliUsage(env, dependencies);
-  if (geminiCliUsage.provider) {
-    providers.push(geminiCliUsage.provider);
-  }
-
   const openCodeAuth = (await readJson(paths.openCodeAuthPath)) ?? {};
   const openCodeConfig = (await readJson(paths.openCodeConfigPath)) ?? {};
-  const geminiDiagnostic = getGeminiAuthDiagnostic(openCodeAuth?.google, openCodeConfig, env);
-  if (!providers.some((provider) => provider.provider === "google") && hasGeminiAuth(openCodeAuth?.google, openCodeConfig, env)) {
-    providers.push(normalizeGeminiUsage());
-  } else if (!geminiCliUsage.detected && geminiDiagnostic) {
-    diagnostics.push(geminiDiagnostic);
+  const googleAuth = openCodeAuth?.google;
+
+  if (isGeminiOAuthAuth(googleAuth)) {
+    if (now - nextState.geminiLastFetchAt < GEMINI_MIN_POLL_INTERVAL_MS && nextState.geminiProvider) {
+      providers.push(nextState.geminiProvider);
+    } else {
+      let oauthProviderPushed = false;
+      try {
+        const { accessToken, updatedAuth: refreshedAuth } = await ensureGeminiAccessToken(
+          paths.openCodeAuthPath,
+          openCodeAuth,
+          googleAuth,
+          env,
+        );
+        const currentAuth = refreshedAuth ?? openCodeAuth;
+        const currentGoogle = currentAuth?.google ?? googleAuth;
+
+        let projectId = resolveGeminiProjectId(currentGoogle);
+
+        if (!projectId) {
+          const { projectId: resolvedId, reason } = await fetchGeminiManagedProjectId(accessToken);
+          if (resolvedId) {
+            projectId = resolvedId;
+            const parts = parseGeminiRefreshParts(currentGoogle.refresh);
+            const newRefresh = formatGeminiRefreshParts(parts.refreshToken, resolvedId, undefined);
+            const updatedGoogle = { ...currentGoogle, refresh: newRefresh };
+            await writeJson(paths.openCodeAuthPath, { ...currentAuth, google: updatedGoogle });
+          } else {
+            diagnostics.push(`Gemini project not resolved: ${reason ?? "unknown reason"}`);
+          }
+        }
+
+        if (projectId) {
+          const quota = await fetchGeminiQuota(accessToken, projectId);
+          if (quota?.buckets?.length) {
+            const provider = normalizeGeminiOAuthUsage(quota);
+            providers.push(provider);
+            nextState.geminiProvider = provider;
+            nextState.geminiLastFetchAt = now;
+            oauthProviderPushed = true;
+          }
+        }
+      } catch (error) {
+        diagnostics.push(`Gemini quota fetch failed: ${getErrorMessage(error)}`);
+      }
+
+      if (!oauthProviderPushed) {
+        const cliUsage = await loadGeminiCliUsage(env, dependencies);
+        if (cliUsage.provider) {
+          providers.push(cliUsage.provider);
+        } else {
+          providers.push(normalizeGeminiUsage());
+        }
+      }
+    }
+  } else {
+    const cliUsage = await loadGeminiCliUsage(env, dependencies);
+    if (cliUsage.provider) {
+      providers.push(cliUsage.provider);
+    } else if (resolveGoogleApiKey(googleAuth, env) || hasGeminiPluginConfiguration(openCodeConfig)) {
+      providers.push(normalizeGeminiUsage());
+    } else if (!cliUsage.detected) {
+      const geminiDiagnostic = getGeminiAuthDiagnostic(googleAuth, openCodeConfig, env);
+      if (geminiDiagnostic) diagnostics.push(geminiDiagnostic);
+    }
   }
 
   return {
@@ -785,6 +1022,7 @@ module.exports = {
   loadOpenAIUsage,
   normalizeGeminiUsage,
   normalizeGeminiCliUsage,
+  normalizeGeminiOAuthUsage,
   normalizeAnthropicUsage,
   normalizeCodexUsage,
   parseGeminiCliQuota,
