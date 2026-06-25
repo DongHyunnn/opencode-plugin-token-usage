@@ -35,6 +35,7 @@ class DashboardService {
       openCodeAuthPath: resolveHostPath(config.get("openCodeAuthPath") || DEFAULT_PATHS.openCodeAuthPath),
       openCodeConfigPath: resolveHostPath(config.get("openCodeConfigPath") || DEFAULT_PATHS.openCodeConfigPath),
       codexAuthPath: resolveHostPath(config.get("codexAuthPath") || DEFAULT_PATHS.codexAuthPath),
+      claudeCodeCredentialsPath: resolveHostPath(config.get("claudeCodeCredentialsPath") || DEFAULT_PATHS.claudeCodeCredentialsPath),
       refreshIntervalSeconds: Number(config.get("refreshIntervalSeconds") || DEFAULT_LIVE_REFRESH_INTERVAL_SECONDS),
       historyWindow: config.get("historyWindow") || "24h",
       showEstimated7h: Boolean(config.get("showEstimated7h")),
@@ -77,7 +78,7 @@ class DashboardService {
 
     const anthropicSharedPaths = getAnthropicSharedPaths(config.openCodeAuthPath);
     const openAISharedPaths = getOpenAISharedPaths(config.openCodeAuthPath);
-    for (const filePath of [config.databasePath, `${config.databasePath}-wal`, config.openCodeAuthPath, config.openCodeConfigPath, config.codexAuthPath, anthropicSharedPaths.cachePath, openAISharedPaths.cachePath]) {
+    for (const filePath of [config.databasePath, `${config.databasePath}-wal`, config.openCodeAuthPath, config.openCodeConfigPath, config.codexAuthPath, config.claudeCodeCredentialsPath, anthropicSharedPaths.cachePath, openAISharedPaths.cachePath]) {
       const watcher = createFsWatcher(filePath, onExternalChange);
       if (watcher) this.disposables.push(watcher);
     }
@@ -137,6 +138,7 @@ class DashboardService {
           openCodeAuthPath: config.openCodeAuthPath,
           openCodeConfigPath: config.openCodeConfigPath,
           codexAuthPath: config.codexAuthPath,
+          claudeCodeCredentialsPath: config.claudeCodeCredentialsPath,
           liveRefreshIntervalSeconds: config.refreshIntervalSeconds,
         },
         {

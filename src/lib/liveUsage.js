@@ -68,6 +68,36 @@ function getAnthropicAuthStatus(auth, { forceRefresh = false } = {}) {
   return "not-configured";
 }
 
+function getClaudeCodeCredentialsStatus(credentials, { forceRefresh = false } = {}) {
+  const oauth = credentials?.claudeAiOauth;
+  const hasAccess = Boolean(oauth?.accessToken);
+
+  if (!forceRefresh && hasAccess && !isTokenExpired(oauth?.expiresAt)) {
+    return "ready";
+  }
+
+  if (oauth?.refreshToken) {
+    return "refreshable";
+  }
+
+  if (hasAccess) {
+    return "expired";
+  }
+
+  return "not-configured";
+}
+
+function toAnthropicAuthFromClaudeCode(credentials) {
+  const oauth = credentials?.claudeAiOauth;
+  if (!oauth?.accessToken) return null;
+  return {
+    type: "oauth",
+    access: oauth.accessToken,
+    refresh: oauth.refreshToken,
+    expires: oauth.expiresAt,
+  };
+}
+
 function getAnthropicAuthFailureDiagnostic(error) {
   const message = getErrorMessage(error);
   if (message.startsWith("Anthropic refresh")) {
@@ -459,11 +489,13 @@ function normalizeAnthropicUsage(data) {
   const windows = [];
   const fiveHour = data?.five_hour ?? data?.fiveHour;
   const sevenDay = data?.seven_day ?? data?.sevenDay;
+  const sessionLimitPercent = getAnthropicLimitPercent(data, { group: "session", kind: "session" });
+  const weeklyLimitPercent = getAnthropicLimitPercent(data, { group: "weekly", kind: "weekly_all" });
   if (fiveHour) {
     windows.push({
       id: "anthropic-5h",
       label: "5h",
-      percentUsed: safePct(fiveHour.utilization),
+      percentUsed: sessionLimitPercent ?? safePct(fiveHour.utilization),
       resetText: formatReset(fiveHour.resets_at ?? fiveHour.reset),
     });
   }
@@ -471,7 +503,7 @@ function normalizeAnthropicUsage(data) {
     windows.push({
       id: "anthropic-7d",
       label: "7d",
-      percentUsed: safePct(sevenDay.utilization),
+      percentUsed: weeklyLimitPercent ?? safePct(sevenDay.utilization),
       resetText: formatReset(sevenDay.resets_at ?? sevenDay.reset),
     });
   }
@@ -497,6 +529,13 @@ function normalizeAnthropicUsage(data) {
     billing,
     limitReached: false,
   };
+}
+
+function getAnthropicLimitPercent(data, { group, kind }) {
+  const limits = Array.isArray(data?.limits) ? data.limits : [];
+  const limit = limits.find((entry) => entry?.group === group) ?? limits.find((entry) => entry?.kind === kind);
+  if (limit?.percent === undefined) return null;
+  return safeRawPct(limit.percent);
 }
 
 function normalizeAnthropicCredits(value) {
@@ -577,24 +616,101 @@ async function refreshAnthropicAuth(authPath, auth) {
   return updated;
 }
 
-async function ensureAnthropicAuth(authPath, { forceRefresh = false } = {}) {
+async function refreshClaudeCodeAnthropicCredentials(credentialsPath, credentials) {
+  const oauth = credentials?.claudeAiOauth;
+  const refreshToken = oauth?.refreshToken;
+  if (!refreshToken) throw new Error("Claude Code refresh token missing");
+
+  const response = await fetch(ANTHROPIC_OAUTH_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: ANTHROPIC_OAUTH_CLIENT_ID,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Claude Code refresh ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const json = await response.json();
+  const expiresIn = Number(json.expires_in);
+  const updated = {
+    ...(credentials ?? {}),
+    claudeAiOauth: {
+      ...(oauth ?? {}),
+      accessToken: json.access_token,
+      refreshToken: json.refresh_token ?? refreshToken,
+      expiresAt: Number.isFinite(expiresIn) && expiresIn > 0 ? Date.now() + expiresIn * 1000 : undefined,
+    },
+  };
+  await writeJson(credentialsPath, updated);
+  return updated;
+}
+
+async function ensureClaudeCodeAnthropicAuth(credentialsPath, { forceRefresh = false } = {}) {
+  if (!credentialsPath) {
+    return { auth: null, status: "not-configured", refreshed: false };
+  }
+
+  const credentials = (await readJson(credentialsPath)) ?? {};
+  const status = getClaudeCodeCredentialsStatus(credentials, { forceRefresh });
+  if (status === "ready") {
+    return { auth: toAnthropicAuthFromClaudeCode(credentials), status, refreshed: false };
+  }
+  if (status !== "refreshable") {
+    return { auth: toAnthropicAuthFromClaudeCode(credentials), status, refreshed: false };
+  }
+
+  const refreshedCredentials = await refreshClaudeCodeAnthropicCredentials(credentialsPath, credentials);
+  return { auth: toAnthropicAuthFromClaudeCode(refreshedCredentials), status: "ready", refreshed: true };
+}
+
+async function ensureAnthropicAuth(authPath, { forceRefresh = false, claudeCodeCredentialsPath = null } = {}) {
   const auth = (await readJson(authPath)) ?? {};
   const status = getAnthropicAuthStatus(auth, { forceRefresh });
   if (status === "ready") {
     return { auth, status, refreshed: false };
   }
-  if (status !== "refreshable") {
-    return { auth, status, refreshed: false };
+
+  let openCodeRefreshError = null;
+  if (status === "refreshable") {
+    try {
+      if (!anthropicRefreshInFlight) {
+        anthropicRefreshInFlight = refreshAnthropicAuth(authPath, auth).finally(() => {
+          anthropicRefreshInFlight = null;
+        });
+      }
+
+      const refreshedAuth = await anthropicRefreshInFlight;
+      return { auth: refreshedAuth, status: "ready", refreshed: true };
+    } catch (error) {
+      openCodeRefreshError = error;
+    }
   }
 
-  if (!anthropicRefreshInFlight) {
-    anthropicRefreshInFlight = refreshAnthropicAuth(authPath, auth).finally(() => {
-      anthropicRefreshInFlight = null;
-    });
+  try {
+    const claudeCodeResult = await ensureClaudeCodeAnthropicAuth(claudeCodeCredentialsPath, { forceRefresh });
+    if (claudeCodeResult.auth?.access) {
+      return {
+        auth: {
+          ...(auth ?? {}),
+          anthropic: claudeCodeResult.auth,
+        },
+        status: "ready",
+        refreshed: claudeCodeResult.refreshed,
+        source: "claude-code",
+      };
+    }
+  } catch (error) {
+    if (!openCodeRefreshError) throw error;
   }
 
-  const refreshedAuth = await anthropicRefreshInFlight;
-  return { auth: refreshedAuth, status: "ready", refreshed: true };
+  if (openCodeRefreshError) throw openCodeRefreshError;
+  return { auth, status, refreshed: false };
 }
 
 async function refreshOpenAIAuth(openCodeAuthPath, codexAuthPath, openCodeAuth, codexAuth, refreshToken) {
@@ -827,7 +943,10 @@ async function loadAnthropicUsage(paths, nextState, now, anthropicPolicy, depend
     }
 
     const anthropicResult = await runAuthenticatedUsage({
-      ensureAuth: ({ forceRefresh }) => ensureAnthropicAuth(paths.openCodeAuthPath, { forceRefresh }),
+      ensureAuth: ({ forceRefresh }) => ensureAnthropicAuth(paths.openCodeAuthPath, {
+        forceRefresh,
+        claudeCodeCredentialsPath: paths.claudeCodeCredentialsPath,
+      }),
       getToken: (authResult) => authResult?.auth?.anthropic?.access ?? null,
       getRetryToken: (authResult, previousToken) => {
         const retryToken = authResult?.refreshed ? authResult?.auth?.anthropic?.access : null;

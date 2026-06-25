@@ -16,6 +16,7 @@ function createVscodeMock(overrides = {}) {
     openCodeAuthPath: "/tmp/auth.json",
     openCodeConfigPath: "/tmp/opencode.json",
     codexAuthPath: "/tmp/codex.json",
+    claudeCodeCredentialsPath: "/tmp/claude-credentials.json",
     refreshIntervalSeconds: 30,
     historyWindow: "24h",
     showEstimated7h: false,
@@ -256,6 +257,7 @@ testIfLinux("refresh translates Windows-style configured paths before loading hi
         openCodeAuthPath: "C:\\Users\\Alice\\.local\\share\\opencode\\auth.json",
         openCodeConfigPath: "C:\\Users\\Alice\\.config\\opencode\\opencode.json",
         codexAuthPath: "C:\\Users\\Alice\\.codex\\auth.json",
+        claudeCodeCredentialsPath: "C:\\Users\\Alice\\.claude\\.credentials.json",
       },
       loadHistoryImpl: async (databasePath, windowKey) => {
         historyCalls.push([databasePath, windowKey]);
@@ -280,6 +282,7 @@ testIfLinux("refresh translates Windows-style configured paths before loading hi
         openCodeAuthPath: "/mnt/c/Users/Alice/.local/share/opencode/auth.json",
         openCodeConfigPath: "/mnt/c/Users/Alice/.config/opencode/opencode.json",
         codexAuthPath: "/mnt/c/Users/Alice/.codex/auth.json",
+        claudeCodeCredentialsPath: "/mnt/c/Users/Alice/.claude/.credentials.json",
         liveRefreshIntervalSeconds: 30,
       },
     ]);

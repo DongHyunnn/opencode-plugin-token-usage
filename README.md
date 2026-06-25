@@ -110,6 +110,7 @@ The release workflow also supports Open VSX publishing when the repository secre
 - `opencodeTokenUsage.openCodeAuthPath`
 - `opencodeTokenUsage.openCodeConfigPath`
 - `opencodeTokenUsage.codexAuthPath`
+- `opencodeTokenUsage.claudeCodeCredentialsPath`
 - `opencodeTokenUsage.refreshIntervalSeconds`
 - `opencodeTokenUsage.historyWindow`
 - `opencodeTokenUsage.showEstimated7h`
@@ -118,7 +119,7 @@ These paths are machine-scoped because they point to local editor/runtime state.
 
 ## How auth is checked
 
-- **Claude (Anthropic)**: Uses `openCodeAuthPath` (`~/.local/share/opencode/auth.json`), reuses a valid access token until expiry, then refreshes with the stored refresh token. Multiple running extension instances share a single file-backed cache so only one instance hits the API per refresh cycle.
+- **Claude (Anthropic)**: Uses `openCodeAuthPath` (`~/.local/share/opencode/auth.json`), reuses a valid access token until expiry, then refreshes with the stored refresh token. If the OpenCode refresh token is missing or expired, it falls back to Claude Code credentials from `claudeCodeCredentialsPath` (`~/.claude/.credentials.json`). Multiple running extension instances share a single file-backed cache so only one instance hits the API per refresh cycle.
 - **Codex/OpenAI**: Reads both `openCodeAuthPath` and `codexAuthPath`; uses valid OpenCode access first; otherwise tries refresh tokens from either path; otherwise falls back to raw Codex access token only when no refresh path exists. Also uses a shared file-backed cache to deduplicate API calls.
 - **Gemini**: Three-tier fallback in order:
 1. **OAuth quota** (live rate-limit windows): if `openCodeAuthPath` contains a `google.type = "oauth"` entry from the [`opencode-gemini-auth`](https://github.com/jenslys/opencode-gemini-auth) plugin, the extension calls `cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` directly using that token. If the access token is already valid, quota fetch works directly; if the token is expired, automatic refresh now requires local `OTU_GEMINI_OAUTH_CLIENT_ID` and `OTU_GEMINI_OAUTH_CLIENT_SECRET` environment variables before the extension will refresh it.

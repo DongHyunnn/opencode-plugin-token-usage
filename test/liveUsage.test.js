@@ -65,7 +65,7 @@ function createTextResponse(text, { ok = false, status = 500 } = {}) {
   };
 }
 
-async function createAuthPaths(openCodeAuth = {}, codexAuth = {}, openCodeConfig = {}) {
+async function createAuthPaths(openCodeAuth = {}, codexAuth = {}, openCodeConfig = {}, claudeCodeCredentials = null) {
   const dirPath = await fs.mkdtemp(path.join(os.tmpdir(), "live-usage-"));
   tempDirs.push(dirPath);
 
@@ -73,12 +73,16 @@ async function createAuthPaths(openCodeAuth = {}, codexAuth = {}, openCodeConfig
     openCodeAuthPath: path.join(dirPath, "opencode-auth.json"),
     openCodeConfigPath: path.join(dirPath, "opencode.json"),
     codexAuthPath: path.join(dirPath, "codex-auth.json"),
+    claudeCodeCredentialsPath: path.join(dirPath, "claude-code-credentials.json"),
   };
 
   await Promise.all([
     fs.writeFile(paths.openCodeAuthPath, `${JSON.stringify(openCodeAuth)}\n`, "utf8"),
     fs.writeFile(paths.openCodeConfigPath, `${JSON.stringify(openCodeConfig)}\n`, "utf8"),
     fs.writeFile(paths.codexAuthPath, `${JSON.stringify(codexAuth)}\n`, "utf8"),
+    claudeCodeCredentials
+      ? fs.writeFile(paths.claudeCodeCredentialsPath, `${JSON.stringify(claudeCodeCredentials)}\n`, "utf8")
+      : Promise.resolve(),
   ]);
 
   return paths;
@@ -116,6 +120,20 @@ test("normalizeAnthropicUsage extracts rate limits and billing", () => {
   assert.equal(normalized.billing.amountUsed, 62.37);
   assert.equal(normalized.billing.amountLimit, 150);
   assert.equal(normalized.billing.percentUsed, 42);
+});
+
+test("normalizeAnthropicUsage prefers authoritative limit percents", () => {
+  const normalized = normalizeAnthropicUsage({
+    five_hour: { utilization: 10, resets_at: Date.now() + 3600_000 },
+    seven_day: { utilization: 1, resets_at: Date.now() + 7200_000 },
+    limits: [
+      { kind: "session", group: "session", percent: 10 },
+      { kind: "weekly_all", group: "weekly", percent: 1 },
+    ],
+  });
+
+  assert.equal(normalized.windows[0].percentUsed, 10);
+  assert.equal(normalized.windows[1].percentUsed, 1);
 });
 
 test("normalizeCodexUsage extracts primary and secondary windows", () => {
@@ -345,6 +363,56 @@ test("loadLiveUsage reports Anthropic refresh failures distinctly", async () => 
   assert.deepEqual(result.providers, []);
   assert.deepEqual(result.diagnostics, [
     "Claude auth refresh failed: Anthropic refresh 400: denied",
+    "Codex not configured",
+    "Gemini API key missing or invalid",
+  ]);
+});
+
+test("loadLiveUsage falls back to Claude Code credentials when OpenCode Anthropic refresh expires", async () => {
+  const paths = await createAuthPaths(
+    {
+      anthropic: {
+        refresh: "expired-opencode-refresh",
+      },
+    },
+    {},
+    {},
+    {
+      claudeAiOauth: {
+        accessToken: "claude-code-access",
+        refreshToken: "claude-code-refresh",
+        expiresAt: Date.now() + 60_000,
+      },
+    },
+  );
+  const calls = installFetchMock([
+    (url, options) => {
+      assert.equal(url, ANTHROPIC_OAUTH_TOKEN_URL);
+      assert.equal(options.method, "POST");
+      assert.match(options.body, /"refresh_token":"expired-opencode-refresh"/);
+      return createJsonResponse({ error: "invalid_grant", error_description: "Refresh token expired" }, { ok: false, status: 400 });
+    },
+    (url, options) => {
+      assert.equal(url, ANTHROPIC_USAGE_URL);
+      assert.equal(options.headers.Authorization, "Bearer claude-code-access");
+      return createJsonResponse({
+        five_hour: { utilization: 0.07, resets_at: Date.now() + 3600_000 },
+        seven_day: { utilization: 1, resets_at: Date.now() + 7200_000 },
+        limits: [
+          { kind: "session", group: "session", percent: 7 },
+          { kind: "weekly_all", group: "weekly", percent: 2 },
+        ],
+      });
+    },
+  ]);
+
+  const result = await loadLiveUsage(paths);
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.providers[0].provider, "anthropic");
+  assert.equal(result.providers[0].windows[0].percentUsed, 7);
+  assert.equal(result.providers[0].windows[1].percentUsed, 2);
+  assert.deepEqual(result.diagnostics, [
     "Codex not configured",
     "Gemini API key missing or invalid",
   ]);

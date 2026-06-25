@@ -2,7 +2,7 @@
   "name": "opencode-token-usage-extension",
   "displayName": "OTU: OpenCode Token Usage",
   "description": "VS Code/Cursor extension that shows OpenCode token history plus live provider rate limits and billing.",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "publisher": "DongHyunnn",
   "license": "MIT",
   "repository": {
@@ -108,6 +108,12 @@
           "default": "~/.codex/auth.json",
           "scope": "machine",
           "description": "Path to the local Codex auth file."
+        },
+        "opencodeTokenUsage.claudeCodeCredentialsPath": {
+          "type": "string",
+          "default": "~/.claude/.credentials.json",
+          "scope": "machine",
+          "description": "Path to the local Claude Code credentials file used as a fallback for Anthropic OAuth."
         },
         "opencodeTokenUsage.refreshIntervalSeconds": {
           "type": "number",

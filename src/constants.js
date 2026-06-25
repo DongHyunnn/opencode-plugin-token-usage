@@ -6,6 +6,7 @@ const DEFAULT_PATHS = {
   openCodeAuthPath: path.join(os.homedir(), ".local", "share", "opencode", "auth.json"),
   openCodeConfigPath: path.join(os.homedir(), ".config", "opencode", "opencode.json"),
   codexAuthPath: path.join(os.homedir(), ".codex", "auth.json"),
+  claudeCodeCredentialsPath: path.join(os.homedir(), ".claude", ".credentials.json"),
 };
 
 const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
